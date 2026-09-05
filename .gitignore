@@ -23,3 +23,6 @@
 .idea/
 .vscode/
 *.swp
+
+# Wails build cache
+/frontend/package.json.md5
