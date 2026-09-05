@@ -1,0 +1,23 @@
+# Build output
+/build/bin/
+/dist/
+*.exe
+*.syso
+
+# Wails
+/frontend/dist/
+/frontend/node_modules/
+/frontend/wailsjs/
+
+# Embedded ffmpeg asset (fetched at build time, never committed)
+/internal/ffmpeg/assets/*.gz
+
+# Local toolchain / scratch
+/.task/
+/scripts/vendor/
+*.log
+
+# Editor
+.idea/
+.vscode/
+*.swp
