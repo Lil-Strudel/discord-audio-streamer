@@ -5,7 +5,9 @@
 *.syso
 
 # Wails
-/frontend/dist/
+# Keep the directory: main.go embeds it, so a fresh clone must still build.
+/frontend/dist/*
+!/frontend/dist/.gitkeep
 /frontend/node_modules/
 /frontend/wailsjs/
 

@@ -1,0 +1,341 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/config"
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/discord"
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/ffmpeg"
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/pipeline"
+)
+
+// Events emitted to the frontend.
+const (
+	// eventStatus fires whenever the shape of the UI should change: connected,
+	// joined, a track loaded, playback started or stopped.
+	eventStatus = "status"
+
+	// eventTelemetry fires continuously while audio is flowing, carrying the
+	// playback position, levels and buffer health.
+	eventTelemetry = "telemetry"
+
+	// eventError carries a message worth showing the user.
+	eventError = "error"
+)
+
+// telemetryInterval is how often the meter and position are pushed. Fast enough
+// for a level meter to look alive, slow enough not to flood the webview bridge.
+const telemetryInterval = 100 * time.Millisecond
+
+// Mode is which audio path is active. Only one may run at a time: they would
+// otherwise fight over a single voice connection and the user would hear both.
+type Mode string
+
+const (
+	ModeIdle    Mode = "idle"
+	ModePlayer  Mode = "player"
+	ModeCapture Mode = "capture"
+)
+
+// TrackInfo describes the loaded file for the player UI.
+type TrackInfo struct {
+	Path       string `json:"path"`
+	Name       string `json:"name"`
+	Codec      string `json:"codec"`
+	DurationMs int64  `json:"durationMs"`
+}
+
+// Status is the whole view state, delivered in one call so the UI never has to
+// stitch together several round trips that could disagree with each other.
+type Status struct {
+	HasToken  bool            `json:"hasToken"`
+	Connected bool            `json:"connected"`
+	InVoice   bool            `json:"inVoice"`
+	BotName   string          `json:"botName"`
+	BotAvatar string          `json:"botAvatar"`
+	InviteURL string          `json:"inviteUrl"`
+	GuildID   string          `json:"guildId"`
+	ChannelID string          `json:"channelId"`
+	Mode      Mode            `json:"mode"`
+	Playing   bool            `json:"playing"`
+	Paused    bool            `json:"paused"`
+	Track     *TrackInfo      `json:"track"`
+	DeviceID  string          `json:"deviceId"`
+	Settings  config.Settings `json:"settings"`
+	FFmpegErr string          `json:"ffmpegError"`
+}
+
+// Telemetry is the fast-moving state behind the meters and the seek bar.
+type Telemetry struct {
+	PositionMs      int64   `json:"positionMs"`
+	RMS             float64 `json:"rms"`
+	Peak            float64 `json:"peak"`
+	BufferedFrames  int     `json:"bufferedFrames"`
+	BufferCapacity  int     `json:"bufferCapacity"`
+	DroppedFrames   uint64  `json:"droppedFrames"`
+	Underruns       uint64  `json:"underruns"`
+	FramesSent      uint64  `json:"framesSent"`
+	FramesHeld      uint64  `json:"framesHeld"`
+	Resyncs         uint64  `json:"resyncs"`
+	LatenessMs      float64 `json:"latenessMs"`
+	MaxLatenessMs   float64 `json:"maxLatenessMs"`
+	EncryptionReady bool    `json:"encryptionReady"`
+}
+
+// App is the surface bound to the frontend. Every exported method here is
+// callable from TypeScript.
+type App struct {
+	ctx    context.Context
+	logger *slog.Logger
+
+	store  *config.Store
+	client *discord.Client
+
+	mu       sync.Mutex
+	pipe     *pipeline.Pipeline
+	mode     Mode
+	track    *TrackInfo
+	deviceID string
+	// trackPath and seekBase let a seek restart ffmpeg at a new offset, which
+	// is the only way to move within a one-way decode pipe.
+	trackPath string
+
+	telemetryStop func()
+	startupErr    string
+}
+
+// NewApp creates the bound application object.
+func NewApp(logger *slog.Logger) *App {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &App{
+		logger: logger,
+		client: discord.New(logger),
+		mode:   ModeIdle,
+	}
+}
+
+func (a *App) startup(ctx context.Context) {
+	a.ctx = ctx
+
+	store, err := config.Open()
+	if err != nil {
+		a.logger.Error("could not open the configuration", slog.Any("err", err))
+		a.startupErr = "Settings could not be loaded, so nothing will be remembered between runs: " + err.Error()
+		store, _ = config.OpenAt("")
+	}
+	a.store = store
+
+	// Resolve ffmpeg once at startup rather than at the first play, so a broken
+	// installation is reported while the user is still reading the setup screen
+	// instead of when they press play.
+	if _, err := ffmpeg.Resolve(); err != nil {
+		a.logger.Error("ffmpeg is unavailable", slog.Any("err", err))
+		a.startupErr = err.Error()
+	}
+}
+
+func (a *App) shutdown(context.Context) {
+	a.stopTelemetry()
+
+	a.mu.Lock()
+	pipe := a.pipe
+	a.pipe = nil
+	a.mu.Unlock()
+
+	if pipe != nil {
+		pipe.Close()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	a.client.Disconnect(ctx)
+}
+
+// ---------------------------------------------------------------- onboarding
+
+// HasToken reports whether a bot token has been saved, which decides whether
+// the app opens on onboarding or on the player.
+func (a *App) HasToken() bool { return a.store.HasToken() }
+
+// ValidateToken checks a token with Discord without saving it, so the
+// onboarding wizard can show the bot's name and avatar as confirmation before
+// the user commits.
+func (a *App) ValidateToken(token string) (discord.BotInfo, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, 20*time.Second)
+	defer cancel()
+	return discord.Identify(ctx, token)
+}
+
+// SaveToken validates and then stores a bot token.
+func (a *App) SaveToken(token string) (discord.BotInfo, error) {
+	info, err := a.ValidateToken(token)
+	if err != nil {
+		return discord.BotInfo{}, err
+	}
+	if err := a.store.SetToken(token); err != nil {
+		return discord.BotInfo{}, fmt.Errorf("could not save the token: %w", err)
+	}
+	a.emitStatus()
+	return info, nil
+}
+
+// ClearToken forgets the saved token and disconnects.
+func (a *App) ClearToken() error {
+	if err := a.Disconnect(); err != nil {
+		return err
+	}
+	if err := a.store.ClearToken(); err != nil {
+		return err
+	}
+	a.emitStatus()
+	return nil
+}
+
+// OpenURL opens a link in the user's browser. The webview refuses to navigate
+// away from the app, so the Discord developer portal and the invite link have
+// to be handed to the real browser.
+func (a *App) OpenURL(url string) { wruntime.BrowserOpenURL(a.ctx, url) }
+
+// ---------------------------------------------------------------- connection
+
+// Connect opens the gateway using the saved token.
+func (a *App) Connect() error {
+	token, err := a.store.Token()
+	if err != nil {
+		return err
+	}
+
+	settings := a.store.Settings()
+	pipe, err := pipeline.New(a.logger, settings.VolumePercent, settings.Bitrate)
+	if err != nil {
+		return fmt.Errorf("could not start the audio pipeline: %w", err)
+	}
+	pipe.SetOnTrackEnd(a.onTrackEnd)
+
+	ctx, cancel := context.WithTimeout(a.ctx, 45*time.Second)
+	defer cancel()
+
+	if err := a.client.Connect(ctx, token, pipe); err != nil {
+		pipe.Close()
+		return err
+	}
+
+	a.mu.Lock()
+	previous := a.pipe
+	a.pipe = pipe
+	a.mu.Unlock()
+
+	if previous != nil {
+		previous.Close()
+	}
+
+	a.emitStatus()
+	return nil
+}
+
+// Disconnect leaves voice and closes the gateway.
+func (a *App) Disconnect() error {
+	a.stopTelemetry()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	a.client.Disconnect(ctx)
+
+	a.mu.Lock()
+	pipe := a.pipe
+	a.pipe = nil
+	a.mode = ModeIdle
+	a.track = nil
+	a.trackPath = ""
+	a.mu.Unlock()
+
+	if pipe != nil {
+		pipe.Close()
+	}
+
+	a.emitStatus()
+	return nil
+}
+
+// ListGuilds returns the servers the bot is in.
+func (a *App) ListGuilds() []discord.Guild { return a.client.Guilds() }
+
+// ListVoiceChannels returns the voice channels of one server.
+func (a *App) ListVoiceChannels(guildID string) []discord.Channel {
+	return a.client.VoiceChannels(guildID)
+}
+
+// JoinChannel connects the bot to a voice channel.
+func (a *App) JoinChannel(guildID, channelID string) error {
+	ctx, cancel := context.WithTimeout(a.ctx, 45*time.Second)
+	defer cancel()
+
+	if err := a.client.Join(ctx, guildID, channelID); err != nil {
+		return err
+	}
+
+	_ = a.store.Update(func(s *config.Settings) {
+		s.LastGuildID, s.LastChannelID = guildID, channelID
+	})
+
+	a.startTelemetry()
+	a.emitStatus()
+	return nil
+}
+
+// LeaveChannel disconnects from voice but stays on the gateway.
+func (a *App) LeaveChannel() error {
+	a.stopSource()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := a.client.Leave(ctx); err != nil {
+		return err
+	}
+
+	a.stopTelemetry()
+	a.emitStatus()
+	return nil
+}
+
+// ------------------------------------------------------------------- status
+
+// Status returns the complete view state.
+func (a *App) Status() Status {
+	state := a.client.State()
+	info := a.client.Info()
+
+	a.mu.Lock()
+	mode, track, deviceID := a.mode, a.track, a.deviceID
+	pipe := a.pipe
+	a.mu.Unlock()
+
+	status := Status{
+		HasToken:  a.store.HasToken(),
+		Connected: state.Connected,
+		InVoice:   state.InVoice,
+		BotName:   state.BotName,
+		BotAvatar: state.BotAvatar,
+		InviteURL: info.InviteURL,
+		GuildID:   state.GuildID,
+		ChannelID: state.ChannelID,
+		Mode:      mode,
+		Track:     track,
+		DeviceID:  deviceID,
+		Settings:  a.store.Settings(),
+		FFmpegErr: a.startupErr,
+	}
+	if pipe != nil {
+		status.Playing = pipe.Active() && !pipe.Paused()
+		status.Paused = pipe.Paused()
+	}
+	return status
+}
