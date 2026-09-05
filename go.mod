@@ -3,15 +3,20 @@ module github.com/Lil-Strudel/discord-audio-streamer
 go 1.25.0
 
 require (
+	github.com/disgoorg/disgo v0.19.7-0.20260905100952-780222154806
+	github.com/disgoorg/godave v0.3.0
+	github.com/disgoorg/godave/golibdave v0.3.0
+	github.com/disgoorg/snowflake/v2 v2.0.3
+	github.com/wailsapp/wails/v2 v2.15.0
+	golang.org/x/sys v0.46.0
+)
+
+require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
-	github.com/disgoorg/disgo v0.19.7-0.20260905100952-780222154806 // indirect
-	github.com/disgoorg/godave v0.3.0 // indirect
-	github.com/disgoorg/godave/golibdave v0.3.0 // indirect
 	github.com/disgoorg/godave/libdave v0.3.0 // indirect
 	github.com/disgoorg/json/v2 v2.0.0 // indirect
 	github.com/disgoorg/omit v1.0.0 // indirect
-	github.com/disgoorg/snowflake/v2 v2.0.3 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -36,9 +41,7 @@ require (
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
-	github.com/wailsapp/wails/v2 v2.15.0 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.39.0 // indirect
 )
