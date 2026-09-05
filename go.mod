@@ -5,6 +5,8 @@ go 1.25.0
 require (
 	github.com/disgoorg/disgo v0.19.7-0.20260905100952-780222154806 // indirect
 	github.com/disgoorg/godave v0.3.0 // indirect
+	github.com/disgoorg/godave/golibdave v0.3.0 // indirect
+	github.com/disgoorg/godave/libdave v0.3.0 // indirect
 	github.com/disgoorg/json/v2 v2.0.0 // indirect
 	github.com/disgoorg/omit v1.0.0 // indirect
 	github.com/disgoorg/snowflake/v2 v2.0.3 // indirect
