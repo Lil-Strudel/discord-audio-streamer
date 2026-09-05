@@ -1,0 +1,197 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GO_VERSION: "1.25"
+  NODE_VERSION: "22"
+  # godave pins the libdave it expects; see libdave/release.txt in that repo.
+  LIBDAVE_VERSION: v1.1.0
+  WAILS_VERSION: v2.15.0
+
+jobs:
+  # Fast feedback on the parts that do not need Windows. The audio pipeline has
+  # no dependency on Discord or on a capture device, so most of the logic is
+  # covered here.
+  test:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopus-dev pkg-config ffmpeg
+
+      - name: Install libdave
+        run: |
+          NON_INTERACTIVE=1 ./scripts/libdave_install.sh "$LIBDAVE_VERSION"
+          echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/.local/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+
+      - name: Verify C dependencies resolve
+        run: pkg-config --modversion opus dave
+
+      - name: Vet
+        run: go vet ./internal/...
+
+      - name: Test
+        run: go test -race ./internal/...
+
+  windows:
+    name: Build (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # MSYS2 supplies the mingw toolchain that cgo needs on Windows, plus
+      # libopus and pkg-config. Go itself stays native; only the C toolchain
+      # comes from here.
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-opus
+            mingw-w64-x86_64-tools-git
+            unzip
+            zip
+
+      - name: Install libdave
+        shell: pwsh
+        run: ./scripts/libdave_install.ps1 $env:LIBDAVE_VERSION
+
+      # Discord ships libdave for Windows as an MSVC import library, which mingw
+      # cannot be relied on to link. Building a mingw import library straight
+      # from the DLL sidesteps the question entirely, and pkg-config is pointed
+      # at that instead.
+      #
+      # Everything is staged into the MINGW64 prefix so pkg-config finds dave
+      # and opus in its default search path. Setting PKG_CONFIG_PATH would be
+      # the obvious alternative, but MSYS2's pkg-config splits that variable on
+      # ':', which collides with the drive letter in every Windows path.
+      - name: Stage libdave for mingw
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          LIBDAVE="$(cygpath "$LOCALAPPDATA")/libdave"
+          test -f "$LIBDAVE/bin/libdave.dll" || { echo "libdave.dll missing"; ls -R "$LIBDAVE"; exit 1; }
+
+          cp "$LIBDAVE/include/dave.h" /mingw64/include/
+          cp "$LIBDAVE/bin/libdave.dll" /mingw64/bin/
+
+          cd "$(mktemp -d)"
+          gendef "$LIBDAVE/bin/libdave.dll"
+          dlltool -d libdave.def -l /mingw64/lib/libdave.dll.a -D libdave.dll
+          test -f /mingw64/lib/libdave.dll.a
+
+          PREFIX="$(cygpath -m /mingw64)"
+          cat > /mingw64/lib/pkgconfig/dave.pc <<EOF
+          prefix=$PREFIX
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: dave
+          Description: Discord Audio and Video End-to-End Encryption
+          Version: ${LIBDAVE_VERSION#v}
+          Libs: -L\${libdir} -ldave
+          Cflags: -I\${includedir}
+          EOF
+
+      # Fail here, with the versions printed, rather than inside an opaque cgo
+      # link error later.
+      - name: Verify C dependencies resolve
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          pkg-config --modversion opus dave
+          pkg-config --libs --cflags opus dave
+
+      # Go stays native but has to be told which C toolchain to use. The
+      # location comes from the action rather than being assumed, since the
+      # runner's drive letter is not ours to guarantee.
+      - name: Point cgo at the mingw toolchain
+        env:
+          MINGW: ${{ steps.msys2.outputs.msys2-location }}\mingw64\bin
+        run: |
+          echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
+          echo "CC=$MINGW\\gcc.exe" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG=$MINGW\\pkg-config.exe" >> "$GITHUB_ENV"
+          echo "$MINGW" >> "$GITHUB_PATH"
+
+      - name: Fetch ffmpeg for embedding
+        shell: msys2 {0}
+        run: ./scripts/fetch_ffmpeg.sh
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+
+      - name: Build
+        run: |
+          wails build -platform windows/amd64 -tags embedffmpeg -o DiscordAudioStreamer.exe
+
+      # The app loads libdave.dll at startup, so it has to travel with the exe.
+      # objdump reports what else the DLL itself pulls in; the MSVC runtime is
+      # usually already present on a Windows machine, but shipping it costs a
+      # few hundred kilobytes and removes a way for this to fail on someone
+      # else's computer.
+      - name: Assemble the portable zip
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          OUT=dist/DiscordAudioStreamer
+          mkdir -p "$OUT"
+
+          cp build/bin/DiscordAudioStreamer.exe "$OUT/"
+          cp "$(cygpath "$LOCALAPPDATA")/libdave/bin/libdave.dll" "$OUT/"
+          cp docs/USAGE.md "$OUT/README.md"
+
+          echo "-> libdave.dll depends on:"
+          objdump -p "$OUT/libdave.dll" | grep 'DLL Name' || true
+
+          for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll; do
+            src="$(cygpath "$SYSTEMROOT")/System32/$dll"
+            [ -f "$src" ] && cp "$src" "$OUT/" && echo "-> bundled $dll"
+          done
+
+          cd dist && zip -r DiscordAudioStreamer-windows-amd64.zip DiscordAudioStreamer
+          unzip -l DiscordAudioStreamer-windows-amd64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DiscordAudioStreamer-windows-amd64
+          path: dist/DiscordAudioStreamer-windows-amd64.zip
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/DiscordAudioStreamer-windows-amd64.zip
+          generate_release_notes: true
