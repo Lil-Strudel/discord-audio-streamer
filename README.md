@@ -27,6 +27,13 @@ A ring buffer absorbs the mismatch between whatever rate the OS hands us capture
 strict 20 ms cadence Opus expects: it drops the oldest frame on overflow and emits a silence
 frame on underrun.
 
+## Getting it
+
+Grab the zip from the [latest release](../../releases/latest), unpack it, and run
+`DiscordAudioStreamer.exe`. Keep the files together: `libdave.dll` has to sit
+next to the exe. [`docs/USAGE.md`](docs/USAGE.md) is the guide that ships inside
+the zip.
+
 ## Requirements for desktop streaming
 
 ffmpeg has no WASAPI loopback input, so capturing "what my speakers are playing" needs a
