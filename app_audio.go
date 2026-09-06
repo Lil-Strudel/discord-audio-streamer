@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -147,11 +148,28 @@ func (a *App) onTrackEnd() {
 
 // ----------------------------------------------------------------- streamer
 
-// ListCaptureDevices enumerates audio inputs that can be streamed.
+// ListCaptureDevices enumerates the audio devices that can be streamed.
 func (a *App) ListCaptureDevices() ([]ffmpeg.CaptureDevice, error) {
 	ctx, cancel := context.WithTimeout(a.ctx, 20*time.Second)
 	defer cancel()
-	return ffmpeg.ListCaptureDevices(ctx)
+
+	devices, err := ffmpeg.ListCaptureDevices(ctx)
+	if err != nil {
+		// An empty device list is the hardest thing to diagnose remotely, so
+		// the reason for one goes in the log rather than only in a toast.
+		a.logger.Error("could not list audio devices", slog.Any("err", err))
+		return nil, err
+	}
+
+	a.logger.Info("listed audio devices", slog.Int("count", len(devices)))
+	for _, d := range devices {
+		a.logger.Debug("audio device",
+			slog.String("name", d.Name),
+			slog.Bool("output", d.IsOutput),
+			slog.Bool("default", d.IsDefault),
+			slog.String("id", d.ID))
+	}
+	return devices, nil
 }
 
 // StartCapture begins streaming a capture device into the voice channel.
@@ -224,7 +242,12 @@ func (a *App) SetVolume(percent float64) error {
 	if pipe != nil {
 		pipe.SetVolume(percent)
 	}
-	return a.store.Update(func(s *config.Settings) { s.VolumePercent = percent })
+	err := a.store.Update(func(s *config.Settings) { s.VolumePercent = percent })
+
+	// The slider reads its position back out of the status, so without this the
+	// knob would jump to the previous value the moment the pointer is released.
+	a.emitStatus()
+	return err
 }
 
 // SetBitrate sets the Opus target bitrate in kilobits per second.

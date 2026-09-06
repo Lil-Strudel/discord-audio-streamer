@@ -3,16 +3,19 @@
 
   let { value = 100, disabled = false } = $props();
 
-  // Only the in-flight drag position is held locally. Seeding state from the
-  // prop would freeze it at the initial value; deriving instead means a volume
-  // restored from settings appears immediately, without stuttering under a drag.
-  let dragged = $state<number | null>(null);
-  let dragging = $state(false);
+  // `requested` is the last position we asked the backend for. The slider shows
+  // it in preference to the prop until the backend reports that same value back,
+  // which closes the window between letting go of the knob and the status event
+  // arriving — the window in which the knob used to snap back to the old value.
+  let requested = $state<number | null>(null);
+  let local = $derived(requested ?? value);
 
-  let local = $derived(dragging && dragged !== null ? dragged : value);
+  $effect(() => {
+    if (requested !== null && value === requested) requested = null;
+  });
 
   async function push(v: number) {
-    dragged = v;
+    requested = v;
     try {
       await SetVolume(v);
     } catch {
@@ -33,9 +36,6 @@
     {disabled}
     value={local}
     oninput={(e) => push(Number(e.currentTarget.value))}
-    onpointerdown={() => (dragging = true)}
-    onpointerup={() => { dragging = false; dragged = null; }}
-    onpointercancel={() => { dragging = false; dragged = null; }}
   />
   <span class="value" class:boosted={local > 100}>{Math.round(local)}%</span>
 </div>
