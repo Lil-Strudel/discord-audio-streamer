@@ -11,6 +11,12 @@ type CaptureDevice struct {
 	// Name is the label shown in the UI.
 	Name string `json:"name"`
 
+	// IsOutput marks a playback device — speakers, headphones, or the feeding
+	// end of a virtual cable — as opposed to a recording device. On Windows an
+	// output is recorded in loopback mode; nothing else distinguishes the two
+	// once capture is running.
+	IsOutput bool `json:"isOutput"`
+
 	// IsLoopback marks devices that carry desktop audio rather than a
 	// microphone, so the UI can point the user at the right one.
 	IsLoopback bool `json:"isLoopback"`

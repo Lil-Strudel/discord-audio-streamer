@@ -1,9 +1,9 @@
 # Development
 
 The release target is Windows, but the whole app runs on Linux for development.
-The only platform-specific pieces are desktop capture (DirectShow on Windows,
-PulseAudio here) and token encryption (DPAPI on Windows, a plain owner-only file
-here); everything else is shared.
+The only platform-specific pieces are desktop capture (Core Audio on Windows,
+PulseAudio here), token encryption (DPAPI on Windows, a plain owner-only file
+here) and stderr capture for crash logs; everything else is shared.
 
 ## Prerequisites
 
@@ -80,10 +80,42 @@ plain unit tests. Above that:
 - `internal/pipeline` has integration tests that decode a real file, encode it,
   and pace it into a fake voice connection, which is the seam the unit tests
   cannot reach.
-- The Windows DirectShow parser is built and tested on every platform, since it
-  is the one piece that cannot be exercised in development.
+- `internal/wasapi` keeps its PCM conversion — sample formats, channel downmix
+  and resampling — in a file with no Windows dependency, so the fiddliest part of
+  the one package that cannot run in development is still covered by tests.
 
 Tests that need the network are skipped under `-short`.
+
+## Windows audio capture
+
+Capture on Windows does not go through ffmpeg. ffmpeg's only audio input on that
+platform is DirectShow, and DirectShow enumerates recording devices only — the
+speakers can never appear in its listing, which is the reason the usual advice
+for streaming desktop audio is to install a virtual audio cable first.
+
+`internal/wasapi` talks to Core Audio instead. A render endpoint opened with
+`AUDCLNT_STREAMFLAGS_LOOPBACK` yields the same mix Windows is sending to the
+device, so every output and input on the machine is streamable with nothing
+installed.
+
+Two things about that package are worth knowing before editing it:
+
+- **It must not depend on cgo.** No machine here has a mingw toolchain, so the
+  only way to check Windows-only code is to type-check it:
+
+  ```sh
+  CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go vet ./internal/wasapi/
+  ```
+
+  That works only because the package imports nothing that needs a C compiler,
+  which is also why it redeclares the pipeline's sample rate and channel count
+  instead of importing `internal/audio`. `TestFormatMatchesPipeline` is the guard
+  on that duplication.
+
+- **A loopback endpoint that is playing nothing delivers no packets at all**, not
+  silent ones. The capture loop manufactures silence to cover those stretches;
+  without it the pipeline would starve every time the music stopped, and the
+  stream-health readout would fill with underruns that mean nothing.
 
 ## Bindings
 

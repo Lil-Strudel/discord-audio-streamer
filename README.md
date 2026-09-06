@@ -5,8 +5,8 @@ bot. Two modes:
 
 - **Player** — pick an audio file (mp3, wav, flac, ogg, m4a, …) and play it into voice with
   play/pause/stop, seek and a volume slider.
-- **Streamer** — capture your desktop audio through a virtual audio cable and stream it live,
-  also with a volume slider.
+- **Streamer** — capture any audio device on the machine, speakers included, and stream it
+  live, also with a volume slider.
 
 The app ships without a bot token. On first run it walks you through creating a Discord
 application, copying the bot token, and inviting the bot to your server with the right voice
@@ -14,7 +14,7 @@ permissions. The token is stored encrypted on disk and can be changed later from
 
 ## How the audio path works
 
-ffmpeg is used only to *decode or capture* — never to encode. It hands us raw PCM
+ffmpeg is used only to *decode* files — never to encode, and never for capture on Windows. It hands us raw PCM
 (`s16le`, 48 kHz, stereo), we scale the amplitude ourselves (that is what makes the volume
 slider work in real time), encode to Opus in-process, and pace frames onto the wire against a
 monotonic clock so timing cannot drift.
@@ -34,15 +34,17 @@ Grab the zip from the [latest release](../../releases/latest), unpack it, and ru
 next to the exe. [`docs/USAGE.md`](docs/USAGE.md) is the guide that ships inside
 the zip.
 
-## Requirements for desktop streaming
+## Desktop streaming
 
-ffmpeg has no WASAPI loopback input, so capturing "what my speakers are playing" needs a
-virtual audio device. Either works:
+Capture on Windows goes through Core Audio directly rather than through ffmpeg, because
+ffmpeg's only audio input there is DirectShow and DirectShow cannot see playback devices at
+all. Core Audio can open a render endpoint in *loopback* mode, so the app lists every output
+and input on the machine and streams any of them — speakers included, with nothing extra to
+install.
 
-- [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) — route the apps you want to share to
-  `CABLE Input`, then pick `CABLE Output` in this app.
-- [VoiceMeeter](https://vb-audio.com/Voicemeeter/) — more flexible; lets you keep hearing the
-  audio yourself while sharing it.
+Virtual devices such as [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) and
+[VoiceMeeter](https://vb-audio.com/Voicemeeter/) still appear in the list and still work, for
+anyone who already has their routing set up that way.
 
 ## Development
 

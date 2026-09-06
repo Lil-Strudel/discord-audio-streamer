@@ -24,9 +24,8 @@
   let listed = $state(false);
 
   let streaming = $derived(status.mode === "capture");
-  // A monitor or virtual-cable device is the only kind that carries desktop
-  // audio, so its absence is the single most likely reason this screen fails.
-  let hasLoopback = $derived(devices.some((d) => d.isLoopback));
+  let outputs = $derived(devices.filter((d) => d.isOutput));
+  let inputs = $derived(devices.filter((d) => !d.isOutput));
 
   async function refresh() {
     refreshing = true;
@@ -34,8 +33,14 @@
       devices = (await ListCaptureDevices()) ?? [];
       listed = true;
       if (!devices.some((d) => d.id === selected)) {
+        // Streaming desktop audio is what this screen is for, so the default
+        // speakers are the best guess when there is nothing remembered.
         const remembered = devices.find((d) => d.id === status.settings.lastCaptureDeviceId);
-        selected = (remembered ?? devices.find((d) => d.isLoopback) ?? devices[0])?.id ?? "";
+        selected =
+          (remembered ??
+            devices.find((d) => d.isOutput && d.isDefault) ??
+            devices.find((d) => d.isOutput) ??
+            devices[0])?.id ?? "";
       }
     } catch (err) {
       onError(errorText(err));
@@ -71,32 +76,47 @@
         bind:value={selected}
         disabled={streaming || devices.length === 0}
       >
-        {#each devices as device (device.id)}
-          <option value={device.id}>
-            {device.name}{device.isLoopback ? "  (desktop audio)" : ""}
-          </option>
-        {/each}
+        {#if outputs.length}
+          <optgroup label="Outputs — what you hear">
+            {#each outputs as device (device.id)}
+              <option value={device.id}>
+                {device.name}{device.isDefault ? "  (default)" : ""}
+              </option>
+            {/each}
+          </optgroup>
+        {/if}
+        {#if inputs.length}
+          <optgroup label="Inputs — microphones and virtual cables">
+            {#each inputs as device (device.id)}
+              <option value={device.id}>
+                {device.name}{device.isDefault ? "  (default)" : ""}{device.isLoopback
+                  ? "  (desktop audio)"
+                  : ""}
+              </option>
+            {/each}
+          </optgroup>
+        {/if}
         {#if devices.length === 0}
-          <option value="">No capture devices found</option>
+          <option value="">No audio devices found</option>
         {/if}
       </select>
       <button onclick={refresh} disabled={refreshing || streaming}>
         {refreshing ? "Scanning…" : "Refresh"}
       </button>
     </div>
+    <p class="note">
+      Pick an output to stream whatever this machine is playing through it, or an
+      input to stream a microphone. No virtual audio cable is needed.
+    </p>
   </div>
 
-  {#if listed && !hasLoopback}
+  {#if listed && devices.length === 0}
     <div class="callout">
-      <strong>No desktop-audio device found.</strong>
+      <strong>No audio devices found.</strong>
       <p>
-        Windows cannot record what your speakers are playing without a virtual audio
-        cable, so a plain microphone is all that shows up here. Install
-        <a href="https://vb-audio.com/Cable/" onclick={(e) => e.preventDefault()}>
-          VB-Audio Virtual Cable
-        </a>
-        or VoiceMeeter, route the apps you want to share into it, then pick its
-        output device above.
+        Windows reported no active playback or recording devices at all. Check that
+        your speakers or headphones are connected and enabled in Sound settings,
+        then press Refresh.
       </p>
     </div>
   {/if}

@@ -41,19 +41,24 @@ ogg, opus, m4a and most other audio formats are supported.
 
 ## Streaming your desktop audio
 
-Windows does not let a program record what your speakers are playing. To share
-desktop audio you need a **virtual audio cable**, which appears to Windows as a
-recording device:
+Open **Stream desktop audio** and the device list shows everything Windows has,
+in two groups:
 
-- **[VB-Audio Virtual Cable](https://vb-audio.com/Cable/)** is the simple option.
-  Send the apps you want to share to `CABLE Input`, then pick `CABLE Output` in
-  this app.
-- **[VoiceMeeter](https://vb-audio.com/Voicemeeter/)** is more work to set up but
-  lets you keep hearing the audio yourself while sharing it, and mix several
-  sources.
+- **Outputs** — your speakers, headphones, or anything else you play sound
+  through. Pick one of these to stream exactly what you hear through it. This is
+  almost always what you want, and it is what the app picks by default.
+- **Inputs** — microphones, line inputs, and the receiving end of a virtual audio
+  cable if you have one installed.
 
-Once one is installed, open **Stream desktop audio**, pick the device, and press
-**Start streaming**. Devices that look like desktop audio are labelled for you.
+Pick a device and press **Start streaming**. No extra software is needed: the app
+records your speakers through Windows itself.
+
+If you already run **VoiceMeeter** or **VB-Audio Virtual Cable** and prefer to
+keep your existing routing, those devices still show up and still work — a cable
+is now an option rather than a requirement.
+
+You will keep hearing the audio yourself either way; streaming an output does not
+take it away from you.
 
 Only one thing plays at a time: starting a stream stops a file, and vice versa.
 
@@ -68,7 +73,7 @@ material will distort up there — the number turns amber to warn you.
 Open **Buffering and stream health** under the streamer.
 
 - **Dropped frames** mean audio arrived faster than it could be sent. A busy
-  machine or a sample-rate mismatch in your virtual cable will do this.
+  machine will do this.
 - **Underruns** mean audio arrived too slowly and silence was sent instead.
   Raising the buffer helps at the cost of a little delay.
 - **Clock resyncs** mean the app fell far behind schedule, usually because the
