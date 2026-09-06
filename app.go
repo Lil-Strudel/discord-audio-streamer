@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/config"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/discord"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/ffmpeg"
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/logging"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/pipeline"
 )
 
@@ -69,6 +71,10 @@ type Status struct {
 	DeviceID  string          `json:"deviceId"`
 	Settings  config.Settings `json:"settings"`
 	FFmpegErr string          `json:"ffmpegError"`
+
+	// ServersLoaded distinguishes a bot that is in no servers from one whose
+	// server list is still arriving, which look identical otherwise.
+	ServersLoaded bool `json:"serversLoaded"`
 }
 
 // Telemetry is the fast-moving state behind the meters and the seek bar.
@@ -204,6 +210,30 @@ func (a *App) ClearToken() error {
 // to be handed to the real browser.
 func (a *App) OpenURL(url string) { wruntime.BrowserOpenURL(a.ctx, url) }
 
+// LogPath returns the file this run is logging to, for the UI to show.
+func (a *App) LogPath() string {
+	path, err := logging.Path()
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
+// OpenLogFolder reveals the log directory in the system file manager.
+//
+// The logs are the only way to explain a crash after the fact, so finding them
+// cannot require knowing where an application stores its configuration.
+func (a *App) OpenLogFolder() error {
+	dir, err := logging.Dir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create log directory: %w", err)
+	}
+	return openInFileManager(dir)
+}
+
 // ---------------------------------------------------------------- connection
 
 // Connect opens the gateway using the saved token.
@@ -220,7 +250,9 @@ func (a *App) Connect() error {
 	}
 	pipe.SetOnTrackEnd(a.onTrackEnd)
 
-	ctx, cancel := context.WithTimeout(a.ctx, 45*time.Second)
+	// Wide enough for the gateway handshake and the wait for the server list
+	// that follows it, with room for a slow network on top.
+	ctx, cancel := context.WithTimeout(a.ctx, 75*time.Second)
 	defer cancel()
 
 	if err := a.client.Connect(ctx, token, pipe); err != nil {
@@ -237,8 +269,25 @@ func (a *App) Connect() error {
 		previous.Close()
 	}
 
+	// If the servers were still arriving when Connect gave up waiting, refresh
+	// the UI once they land rather than leaving a short list on screen.
+	if !a.client.GuildsLoaded() {
+		go a.awaitGuilds()
+	}
+
 	a.emitStatus()
 	return nil
+}
+
+// awaitGuilds refreshes the UI when a slow server list finally completes.
+func (a *App) awaitGuilds() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if a.client.AwaitGuilds(ctx) {
+		a.logger.Info("server list finished loading")
+		a.emitStatus()
+	}
 }
 
 // Disconnect leaves voice and closes the gateway.
@@ -332,6 +381,8 @@ func (a *App) Status() Status {
 		DeviceID:  deviceID,
 		Settings:  a.store.Settings(),
 		FFmpegErr: a.startupErr,
+
+		ServersLoaded: a.client.GuildsLoaded(),
 	}
 	if pipe != nil {
 		status.Playing = pipe.Active() && !pipe.Paused()

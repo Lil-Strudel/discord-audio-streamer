@@ -27,6 +27,12 @@ const (
 	gatewayTimeout = 30 * time.Second
 	joinTimeout    = 30 * time.Second
 	leaveTimeout   = 10 * time.Second
+
+	// guildLoadTimeout bounds the wait for the bot's servers to arrive after
+	// the gateway handshake. Exceeding it is not fatal: the app connects with
+	// whatever has turned up, because a single server left unavailable by a
+	// Discord incident should not stop the other ones being usable.
+	guildLoadTimeout = 15 * time.Second
 )
 
 // State is what the UI shows about the connection.
@@ -50,8 +56,7 @@ type Client struct {
 	guildID  snowflake.ID
 	chanID   snowflake.ID
 	info     BotInfo
-	ready    chan struct{}
-	readyOne sync.Once
+	guildsUp chan struct{}
 
 	// sender is captured as disgo builds it, so the UI can read pacing stats
 	// without disgo needing to expose the sender it created.
@@ -93,6 +98,18 @@ func (c *Client) Connect(ctx context.Context, token string, pipe *pipeline.Pipel
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 
+	// The gateway's READY payload names the bot's servers but carries none of
+	// their contents: every one is marked unready, and the details follow as
+	// separate events. Listing servers at READY therefore races the cache and
+	// returns an arbitrary prefix of the real list. GuildsReady is dispatched
+	// once the last of them has landed.
+	//
+	// A bot in no servers at all never receives one of those events, so READY
+	// itself has to settle that case or the wait would always time out.
+	guildsUp := make(chan struct{})
+	var guildsOnce sync.Once
+	guildsDone := func() { guildsOnce.Do(func() { close(guildsUp) }) }
+
 	client, err := disgo.New(token,
 		bot.WithLogger(c.logger),
 		bot.WithGatewayConfigOpts(
@@ -112,8 +129,14 @@ func (c *Client) Connect(ctx context.Context, token string, pipe *pipeline.Pipel
 			// Replace disgo's sender with one that cannot drift.
 			voice.WithConnConfigOpts(voice.WithConnAudioSenderCreateFunc(c.newSender)),
 		),
-		bot.WithEventListenerFunc(func(_ *events.Ready) {
+		bot.WithEventListenerFunc(func(e *events.Ready) {
+			if len(e.Guilds) == 0 {
+				guildsDone()
+			}
 			readyOnce.Do(func() { close(ready) })
+		}),
+		bot.WithEventListenerFunc(func(_ *events.GuildsReady) {
+			guildsDone()
 		}),
 	)
 	if err != nil {
@@ -139,11 +162,61 @@ func (c *Client) Connect(ctx context.Context, token string, pipe *pipeline.Pipel
 	c.bot = client
 	c.pipe = pipe
 	c.info = info
-	c.ready = ready
+	c.guildsUp = guildsUp
 	c.mu.Unlock()
 
-	c.logger.Info("connected to Discord", slog.String("bot", info.Name))
+	// Wait for the servers, but do not fail the connection over them.
+	guildCtx, cancelGuilds := context.WithTimeout(ctx, guildLoadTimeout)
+	defer cancelGuilds()
+
+	select {
+	case <-guildsUp:
+	case <-guildCtx.Done():
+		c.logger.Warn("servers were still loading when the gateway settled",
+			slog.Duration("waited", guildLoadTimeout))
+	}
+
+	c.logger.Info("connected to Discord",
+		slog.String("bot", info.Name),
+		slog.Int("servers", len(c.Guilds())))
 	return nil
+}
+
+// GuildsLoaded reports whether every server the bot is in has been received.
+// The UI uses it to tell "no servers" apart from "still loading".
+func (c *Client) GuildsLoaded() bool {
+	c.mu.Lock()
+	up := c.guildsUp
+	c.mu.Unlock()
+
+	if up == nil {
+		return false
+	}
+	select {
+	case <-up:
+		return true
+	default:
+		return false
+	}
+}
+
+// AwaitGuilds blocks until every server has been received, the context is done,
+// or the client disconnects. It exists so the UI can refresh itself if the
+// servers turn up after Connect gave up waiting.
+func (c *Client) AwaitGuilds(ctx context.Context) bool {
+	c.mu.Lock()
+	up := c.guildsUp
+	c.mu.Unlock()
+
+	if up == nil {
+		return false
+	}
+	select {
+	case <-up:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // newSender builds the paced audio sender and remembers it, so pacing stats can
@@ -163,6 +236,7 @@ func (c *Client) Disconnect(ctx context.Context) {
 	c.bot, c.conn, c.pipe = nil, nil, nil
 	c.guildID, c.chanID = 0, 0
 	c.info = BotInfo{}
+	c.guildsUp = nil
 	c.mu.Unlock()
 
 	c.sender.Store(nil)

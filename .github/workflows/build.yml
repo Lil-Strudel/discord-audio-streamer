@@ -78,16 +78,24 @@ jobs:
       # MSYS2 supplies the mingw toolchain that cgo needs on Windows, plus
       # libopus and pkg-config. Go itself stays native; only the C toolchain
       # comes from here.
+      #
+      # UCRT64, not MINGW64. libdave.dll is built by Discord with MSVC and
+      # links its C runtime statically, and dave.h asks the caller to release
+      # the byte arrays it returns with free(). A MINGW64 build gets free()
+      # from the legacy msvcrt.dll, whose heap is not the one those arrays came
+      # from, so releasing them corrupts the heap. UCRT64 links the same
+      # universal CRT that libdave was built against, which is the environment
+      # MSYS2 provides for interoperating with MSVC-built libraries.
       - uses: msys2/setup-msys2@v2
         id: msys2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: false
           install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-pkg-config
-            mingw-w64-x86_64-opus
-            mingw-w64-x86_64-tools-git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-tools-git
             unzip
             zip
 
@@ -100,7 +108,7 @@ jobs:
       # from the DLL sidesteps the question entirely, and pkg-config is pointed
       # at that instead.
       #
-      # Everything is staged into the MINGW64 prefix so pkg-config finds dave
+      # Everything is staged into the UCRT64 prefix so pkg-config finds dave
       # and opus in its default search path. Setting PKG_CONFIG_PATH would be
       # the obvious alternative, but MSYS2's pkg-config splits that variable on
       # ':', which collides with the drive letter in every Windows path.
@@ -111,28 +119,28 @@ jobs:
           LIBDAVE="$(cygpath "$LOCALAPPDATA")/libdave"
           test -f "$LIBDAVE/bin/libdave.dll" || { echo "libdave.dll missing"; ls -R "$LIBDAVE"; exit 1; }
 
-          cp "$LIBDAVE/include/dave.h" /mingw64/include/
-          cp "$LIBDAVE/bin/libdave.dll" /mingw64/bin/
+          cp "$LIBDAVE/include/dave.h" /ucrt64/include/
+          cp "$LIBDAVE/bin/libdave.dll" /ucrt64/bin/
 
           cd "$(mktemp -d)"
           gendef "$LIBDAVE/bin/libdave.dll"
-          dlltool -d libdave.def -l /mingw64/lib/libdave.dll.a -D libdave.dll
-          test -f /mingw64/lib/libdave.dll.a
+          dlltool -d libdave.def -l /ucrt64/lib/libdave.dll.a -D libdave.dll
+          test -f /ucrt64/lib/libdave.dll.a
 
           # Prefer the static libopus. Linking it dynamically is what put a
           # libopus-0.dll dependency into the first release, and opus is small
           # enough that folding it into the exe beats shipping another file.
           # If MSYS2 ever stops packaging the archive the build still works:
           # the bundling step below picks the DLL up instead.
-          if [ -f /mingw64/lib/libopus.a ]; then
-              rm -f /mingw64/lib/libopus.dll.a
+          if [ -f /ucrt64/lib/libopus.a ]; then
+              rm -f /ucrt64/lib/libopus.dll.a
               echo "-> libopus will be linked statically"
           else
               echo "-> no static libopus; the DLL will be bundled"
           fi
 
-          PREFIX="$(cygpath -m /mingw64)"
-          cat > /mingw64/lib/pkgconfig/dave.pc <<EOF
+          PREFIX="$(cygpath -m /ucrt64)"
+          cat > /ucrt64/lib/pkgconfig/dave.pc <<EOF
           prefix=$PREFIX
           libdir=\${prefix}/lib
           includedir=\${prefix}/include
@@ -156,14 +164,14 @@ jobs:
       # Go stays native but has to be told which C toolchain to use. The
       # location comes from the action rather than being assumed, since the
       # runner's drive letter is not ours to guarantee.
-      - name: Point cgo at the mingw toolchain
+      - name: Point cgo at the UCRT64 toolchain
         env:
-          MINGW: ${{ steps.msys2.outputs.msys2-location }}\mingw64\bin
+          TOOLCHAIN: ${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin
         run: |
           echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
-          echo "CC=$MINGW\\gcc.exe" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG=$MINGW\\pkg-config.exe" >> "$GITHUB_ENV"
-          echo "$MINGW" >> "$GITHUB_PATH"
+          echo "CC=$TOOLCHAIN\\gcc.exe" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG=$TOOLCHAIN\\pkg-config.exe" >> "$GITHUB_ENV"
+          echo "$TOOLCHAIN" >> "$GITHUB_PATH"
 
       - name: Fetch ffmpeg for embedding
         shell: msys2 {0}
@@ -208,7 +216,22 @@ jobs:
       # miss, and fails the build rather than shipping it.
       - name: Resolve and verify runtime dependencies
         shell: msys2 {0}
-        run: ./scripts/bundle_windows_deps.sh dist/DiscordAudioStreamer /mingw64/bin
+        run: |
+          set -euo pipefail
+          EXE=dist/DiscordAudioStreamer/DiscordAudioStreamer.exe
+
+          # libdave hands back memory the caller has to free(), so the exe must
+          # use the same C runtime libdave was built against. Importing the
+          # legacy msvcrt.dll means the toolchain slipped back to MINGW64 and
+          # every DAVE handshake would corrupt the heap.
+          if objdump -p "$EXE" | grep -qi 'DLL Name: msvcrt.dll'; then
+              echo "Error: the executable links the legacy msvcrt.dll." >&2
+              echo "It must be built in the UCRT64 environment; see the MSYS2 step." >&2
+              exit 1
+          fi
+          echo "-> C runtime check passed (no msvcrt.dll)"
+
+          ./scripts/bundle_windows_deps.sh dist/DiscordAudioStreamer /ucrt64/bin
 
       # Repack, since the step above may have added DLLs.
       - name: Repack the portable zip

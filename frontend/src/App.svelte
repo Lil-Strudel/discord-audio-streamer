@@ -1,6 +1,6 @@
 <script lang="ts">
   import { EventsOn } from "../wailsjs/runtime/runtime";
-  import { ClearToken, Status } from "../wailsjs/go/main/App";
+  import { ClearToken, LogPath, OpenLogFolder, Status } from "../wailsjs/go/main/App";
   import type { main } from "../wailsjs/go/models";
   import { emptyTelemetry, errorText, type Telemetry } from "./lib/types";
 
@@ -16,6 +16,15 @@
   let telemetry = $state<Telemetry>(emptyTelemetry);
   let tab = $state<"player" | "stream">("player");
   let banner = $state("");
+  let logPath = $state("");
+
+  async function openLogs() {
+    try {
+      await OpenLogFolder();
+    } catch (err) {
+      banner = errorText(err);
+    }
+  }
 
   async function refresh() {
     try {
@@ -36,6 +45,9 @@
   EventsOn("error", (message: string) => (banner = message));
 
   refresh();
+  LogPath()
+    .then((path: string) => (logPath = path))
+    .catch(() => {});
 
   async function resetToken() {
     try {
@@ -69,6 +81,17 @@
           screen = "main";
         }}
       />
+      <div class="row">
+        <div>
+          <strong>Application logs</strong>
+          <p>
+            What the app recorded, including the previous run. Worth attaching
+            to a bug report.
+            {#if logPath}<code>{logPath}</code>{/if}
+          </p>
+        </div>
+        <button onclick={openLogs}>Open log folder</button>
+      </div>
       <div class="danger-zone">
         <div>
           <strong>Forget the saved token</strong>
@@ -136,19 +159,35 @@
     overflow-y: auto;
   }
 
+  /* The log row and the danger zone are the same shape; only the accent on
+     the button differs. */
+  .row,
   .danger-zone {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
     max-width: 620px;
-    margin: 0 auto 48px;
+    margin: 0 auto 16px;
     padding: 14px 18px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
   }
 
+  .danger-zone {
+    margin-bottom: 48px;
+  }
+
+  .row code {
+    display: block;
+    margin-top: 4px;
+    font-size: 11.5px;
+    color: var(--text-faint);
+    word-break: break-all;
+  }
+
+  .row p,
   .danger-zone p {
     margin: 2px 0 0;
     font-size: 12.5px;

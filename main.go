@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/logging"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -17,10 +18,15 @@ import (
 var assets embed.FS
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: logLevel(),
-	}))
+	// Set up file logging before anything else, so a failure during startup is
+	// recorded rather than lost to a GUI build's missing console.
+	logger, closeLog, logErr := logging.Setup(os.Getenv("DAS_DEBUG") != "")
+	defer closeLog()
 	slog.SetDefault(logger)
+
+	if logErr != nil {
+		logger.Error("could not open the log file", slog.Any("err", logErr))
+	}
 
 	app := NewApp(logger)
 
@@ -47,15 +53,9 @@ func main() {
 	})
 	if err != nil {
 		logger.Error("application exited with an error", slog.Any("err", err))
+		closeLog()
 		os.Exit(1)
 	}
-}
 
-// logLevel raises verbosity when DAS_DEBUG is set, which is the only way to get
-// at logs from a GUI build that has no console attached.
-func logLevel() slog.Level {
-	if os.Getenv("DAS_DEBUG") != "" {
-		return slog.LevelDebug
-	}
-	return slog.LevelInfo
+	logger.Info("exiting normally")
 }

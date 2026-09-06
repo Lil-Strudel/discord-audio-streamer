@@ -86,3 +86,19 @@ is happening.
 How you route audio so that you can hear the channel without feeding it back
 into the stream is up to your own device setup. The bot is deafened and never
 listens to the channel, so it cannot create a loop by itself.
+
+## If the app crashes or misbehaves
+
+Every run writes a log file. Open **Settings** and choose **Open log folder**,
+or go there directly:
+
+```
+%APPDATA%\DiscordAudioStreamer\logs\
+```
+
+`app.log` is the current run and `app.previous.log` is the one before it. After
+a crash the useful file is usually `app.previous.log`, because reopening the app
+starts a new `app.log`. Attach it to a bug report.
+
+The log records what the app was doing, and captures the crash report itself if
+the app dies outright.

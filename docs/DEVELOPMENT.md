@@ -139,6 +139,19 @@ The build prefers the static libopus, deleting `libopus.dll.a` from the MINGW64
 prefix so `-lopus` can only resolve to the archive. `libdave` stays dynamic —
 Discord only ships it as a DLL.
 
+The build also runs in MSYS2's **UCRT64** environment rather than MINGW64. That
+is not a style preference. `libdave.dll` is built by Discord with MSVC and links
+its C runtime statically, and `dave.h` asks the caller to release the byte
+arrays it returns with `free()` — which the Go bindings duly do, on every DAVE
+handshake. A MINGW64 build takes `free()` from the legacy `msvcrt.dll`, whose
+heap is not the one those arrays were allocated from, so the release corrupts
+the heap and the process dies on joining a voice channel. UCRT64 links the same
+universal CRT that libdave was built against. CI asserts this by failing if the
+finished executable imports `msvcrt.dll`.
+
+On Linux the same code is fine, because a shared library there allocates from
+the process's own libc heap.
+
 `scripts/bundle_windows_deps.sh` then walks the import tables of everything in
 the payload, copies in any DLL it finds in `/mingw64/bin`, and fails the build
 if a dependency is neither bundled, part of Windows, nor an API set. It is the
@@ -148,3 +161,17 @@ the build stops. To check a payload by hand on Linux:
 ```sh
 DAS_SYSTEM_DIR=/path/to/a/System32 ./scripts/bundle_windows_deps.sh <payload-dir>
 ```
+
+## Logs
+
+`internal/logging` writes to `<user config dir>/DiscordAudioStreamer/logs/`,
+rotating the previous run to `app.previous.log` on each start. A release build
+on Windows is a GUI binary with no console, so this is the only place its output
+goes.
+
+On Windows it also calls `SetStdHandle(STD_ERROR_HANDLE, ...)` to point the
+process's standard error at that file. The Go runtime looks that handle up on
+every write, so panics, fatal errors and the report for a fault inside one of
+the C libraries all land in the log — output no amount of logging from Go could
+otherwise catch, and the only evidence available for a crash on a machine you
+cannot attach a debugger to.

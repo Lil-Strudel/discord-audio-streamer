@@ -56,10 +56,13 @@
     }
   }
 
-  // Guilds arrive with the gateway handshake, so the list is only meaningful
-  // once connected, and has to be cleared when the connection goes away.
+  // Servers arrive as their own events after the gateway handshake, so the
+  // list is only meaningful once connected, has to be cleared when the
+  // connection goes away, and is reloaded when the backend reports the last of
+  // them has landed.
   $effect(() => {
     if (status.connected) {
+      status.serversLoaded;
       loadGuilds().catch((err) => onError(errorText(err)));
     } else {
       guilds = [];
@@ -98,13 +101,15 @@
       <select
         bind:value={guildID}
         onchange={() => run(loadChannels)}
-        disabled={busy || guilds.length === 0}
+        disabled={busy || guilds.length === 0 || !status.serversLoaded}
       >
         {#each guilds as guild (guild.id)}
           <option value={guild.id}>{guild.name}</option>
         {/each}
         {#if guilds.length === 0}
-          <option value="">No servers — invite the bot first</option>
+          <option value="">
+            {status.serversLoaded ? "No servers — invite the bot first" : "Loading servers…"}
+          </option>
         {/if}
       </select>
 

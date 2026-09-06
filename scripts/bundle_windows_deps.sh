@@ -24,7 +24,7 @@ shift
 
 SEARCH_DIRS=("$@")
 if [ ${#SEARCH_DIRS[@]} -eq 0 ]; then
-    SEARCH_DIRS=(/mingw64/bin)
+    SEARCH_DIRS=(/ucrt64/bin)
 fi
 
 # Where the OS keeps its own DLLs. Anything found here is assumed present on the
