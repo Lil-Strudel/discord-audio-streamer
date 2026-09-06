@@ -111,4 +111,40 @@ Windows toolchain: building a mingw import library from `libdave.dll` with
 pkg-config splits `PKG_CONFIG_PATH` on `:`, which collides with drive letters.
 
 To produce a build without tagging, run the workflow manually from the Actions
-tab; it uploads the zip as an artifact.
+tab and leave `release_tag` empty; it uploads the zip as an artifact, which
+needs a GitHub login to download.
+
+### Cutting a release
+
+A downloadable release is only created when the workflow has a tag to attach it
+to. Either push one:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+or run the workflow from the Actions tab with `release_tag` set to `v0.1.0`,
+which tags the commit and publishes in one go. The job needs
+`permissions: contents: write` for this, since the default `GITHUB_TOKEN` is
+read-only.
+
+### Runtime dependencies
+
+The first release shipped an exe that died on startup with
+`libopus-0.dll was not found`: mingw had linked libopus dynamically and nothing
+copied the DLL into the zip. Two things now prevent that.
+
+The build prefers the static libopus, deleting `libopus.dll.a` from the MINGW64
+prefix so `-lopus` can only resolve to the archive. `libdave` stays dynamic —
+Discord only ships it as a DLL.
+
+`scripts/bundle_windows_deps.sh` then walks the import tables of everything in
+the payload, copies in any DLL it finds in `/mingw64/bin`, and fails the build
+if a dependency is neither bundled, part of Windows, nor an API set. It is the
+backstop: whatever the linker decides to pull in, the zip either contains it or
+the build stops. To check a payload by hand on Linux:
+
+```sh
+DAS_SYSTEM_DIR=/path/to/a/System32 ./scripts/bundle_windows_deps.sh <payload-dir>
+```

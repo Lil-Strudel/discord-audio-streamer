@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish a GitHub release under this tag (e.g. v0.1.0). Leave empty to only upload a build artifact."
+        required: false
+        default: ""
 
 env:
   GO_VERSION: "1.25"
@@ -51,6 +56,9 @@ jobs:
   windows:
     name: Build (Windows)
     runs-on: windows-latest
+    # Creating a release needs write access; the default token is read-only.
+    permissions:
+      contents: write
     defaults:
       run:
         shell: bash
@@ -96,7 +104,7 @@ jobs:
       # and opus in its default search path. Setting PKG_CONFIG_PATH would be
       # the obvious alternative, but MSYS2's pkg-config splits that variable on
       # ':', which collides with the drive letter in every Windows path.
-      - name: Stage libdave for mingw
+      - name: Stage native dependencies for mingw
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -110,6 +118,18 @@ jobs:
           gendef "$LIBDAVE/bin/libdave.dll"
           dlltool -d libdave.def -l /mingw64/lib/libdave.dll.a -D libdave.dll
           test -f /mingw64/lib/libdave.dll.a
+
+          # Prefer the static libopus. Linking it dynamically is what put a
+          # libopus-0.dll dependency into the first release, and opus is small
+          # enough that folding it into the exe beats shipping another file.
+          # If MSYS2 ever stops packaging the archive the build still works:
+          # the bundling step below picks the DLL up instead.
+          if [ -f /mingw64/lib/libopus.a ]; then
+              rm -f /mingw64/lib/libopus.dll.a
+              echo "-> libopus will be linked statically"
+          else
+              echo "-> no static libopus; the DLL will be bundled"
+          fi
 
           PREFIX="$(cygpath -m /mingw64)"
           cat > /mingw64/lib/pkgconfig/dave.pc <<EOF
@@ -157,10 +177,9 @@ jobs:
           wails build -platform windows/amd64 -tags embedffmpeg -o DiscordAudioStreamer.exe
 
       # The app loads libdave.dll at startup, so it has to travel with the exe.
-      # objdump reports what else the DLL itself pulls in; the MSVC runtime is
-      # usually already present on a Windows machine, but shipping it costs a
-      # few hundred kilobytes and removes a way for this to fail on someone
-      # else's computer.
+      # The MSVC runtime it was built against is usually already on a Windows
+      # machine, but shipping it costs a few hundred kilobytes and removes a way
+      # for this to fail on someone else's computer.
       - name: Assemble the portable zip
         shell: msys2 {0}
         run: |
@@ -172,15 +191,33 @@ jobs:
           cp "$(cygpath "$LOCALAPPDATA")/libdave/bin/libdave.dll" "$OUT/"
           cp docs/USAGE.md "$OUT/README.md"
 
-          echo "-> libdave.dll depends on:"
-          objdump -p "$OUT/libdave.dll" | grep 'DLL Name' || true
-
           for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll; do
-            src="$(cygpath "$SYSTEMROOT")/System32/$dll"
-            [ -f "$src" ] && cp "$src" "$OUT/" && echo "-> bundled $dll"
+              src="$(cygpath "$SYSTEMROOT")/System32/$dll"
+              if [ -f "$src" ]; then
+                  cp "$src" "$OUT/"
+                  echo "-> bundled $dll"
+              fi
           done
 
           cd dist && zip -r DiscordAudioStreamer-windows-amd64.zip DiscordAudioStreamer
+          unzip -l DiscordAudioStreamer-windows-amd64.zip
+
+      # Anything the binaries import that is neither in the payload nor part of
+      # Windows is a startup crash on the receiving machine. Deriving the list
+      # from the import tables catches whatever the hand-written copies above
+      # miss, and fails the build rather than shipping it.
+      - name: Resolve and verify runtime dependencies
+        shell: msys2 {0}
+        run: ./scripts/bundle_windows_deps.sh dist/DiscordAudioStreamer /mingw64/bin
+
+      # Repack, since the step above may have added DLLs.
+      - name: Repack the portable zip
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd dist
+          rm -f DiscordAudioStreamer-windows-amd64.zip
+          zip -r DiscordAudioStreamer-windows-amd64.zip DiscordAudioStreamer
           unzip -l DiscordAudioStreamer-windows-amd64.zip
 
       - uses: actions/upload-artifact@v4
@@ -189,9 +226,13 @@ jobs:
           path: dist/DiscordAudioStreamer-windows-amd64.zip
           if-no-files-found: error
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
+      # Published on a tag push, or on demand by giving the workflow a tag
+      # name in the Actions UI. Ordinary pushes to main only upload the build
+      # artifact, which needs a GitHub login to download.
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag }}
           files: dist/DiscordAudioStreamer-windows-amd64.zip
           generate_release_notes: true
