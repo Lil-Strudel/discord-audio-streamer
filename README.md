@@ -3,8 +3,8 @@
 A small Windows desktop app for pushing audio into a Discord voice channel through your own
 bot. Two modes:
 
-- **Player** — pick an audio file (mp3, wav, flac, ogg, m4a, …) and play it into voice with
-  play/pause/stop, seek and a volume slider.
+- **Player** — queue audio files (mp3, wav, flac, ogg, m4a, …) or YouTube links and play
+  them into voice with play/pause/stop, seek and a volume slider.
 - **Streamer** — capture any audio device on the machine, speakers included, and stream it
   live, also with a volume slider.
 
@@ -13,6 +13,10 @@ application, copying the bot token, and inviting the bot to your server with the
 permissions. The token is stored encrypted on disk and can be changed later from Settings.
 
 ## How the audio path works
+
+YouTube links go through yt-dlp, which is asked only *where* the audio is, never to
+download it. ffmpeg fetches and decodes that address itself, which is what keeps the
+seek bar working: seeking is a range request rather than a re-download.
 
 ffmpeg is used only to *decode* files — never to encode, and never for capture on Windows. It hands us raw PCM
 (`s16le`, 48 kHz, stereo), we scale the amplitude ourselves (that is what makes the volume

@@ -41,11 +41,13 @@ ogg, opus, m4a and most other audio formats are supported.
 
 ### The queue
 
-Three ways to add tracks:
+Four ways to add tracks:
 
 - **Add files** picks one or several at once.
 - **Add folder** takes everything under a folder, subfolders included.
-- **Dragging** files or folders onto the window adds them too.
+- **Add link** takes a YouTube address. Paste one and press Enter.
+- **Dragging** files or folders onto the window adds them too. This is for files
+  on your computer; a link has to go in the **Add link** box.
 
 Click a track's name to play it. Drag a row up or down to reorder it, or use the
 × on the right to remove it. Names and durations appear a moment after a large
@@ -64,6 +66,32 @@ right of the transport row change that:
 A track whose file has been moved or deleted is skipped with a message rather
 than stopping the queue. The queue, the playback modes and your place in it are
 remembered until the next run.
+
+### YouTube links
+
+Paste a link to a video and it joins the queue like any other track, with its
+real title and length, and plays with the same controls including the seek bar.
+Paste a link to a playlist — or to a video you were watching inside one — and
+every video in it is added, up to two thousand.
+
+Rows that came from YouTube are marked **YT** in the list.
+
+A few things cannot be queued, and the app says so rather than adding a row that
+would only fail later:
+
+- **Live streams and premieres.** A stream has no length and never ends, so it
+  cannot take its turn in a queue.
+- **Private, deleted and age-restricted videos.** Inside a playlist these are
+  skipped and counted; on their own the app reports what YouTube said.
+
+Videos are fetched when they play rather than when you add them, so a long
+playlist is queued in seconds. The first moments of a YouTube track take a little
+longer to start than a file does, because the app has to look up where the audio
+is.
+
+If links stop working across the board, it is almost certainly because YouTube
+changed something and the copy of the downloader inside the app has gone stale.
+A newer release of this app fixes that.
 
 ## Streaming your desktop audio
 

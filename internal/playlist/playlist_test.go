@@ -1,6 +1,7 @@
 package playlist
 
 import (
+	"encoding/json"
 	"sort"
 	"testing"
 )
@@ -409,5 +410,97 @@ func TestSetRepeatIgnoresAnUnknownMode(t *testing.T) {
 	l.SetRepeat(Repeat("backwards"))
 	if got := l.Repeat(); got != RepeatAll {
 		t.Fatalf("repeat = %q, want %q", got, RepeatAll)
+	}
+}
+
+// A queue written before tracks carried a source holds local files, and must
+// still load. This is the compatibility guarantee for a config.json already on
+// a user's disk.
+func TestNewMigratesTracksWithNoSource(t *testing.T) {
+	const saved = `{
+		"tracks": [{"id": "a", "path": "/music/one.mp3", "name": "one.mp3"}],
+		"currentId": "a",
+		"repeat": "off"
+	}`
+
+	var state State
+	if err := json.Unmarshal([]byte(saved), &state); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	tracks := New(state).Snapshot().Tracks
+	if len(tracks) != 1 {
+		t.Fatalf("loaded %d tracks, want 1", len(tracks))
+	}
+	if tracks[0].Source != SourceFile {
+		t.Errorf("Source = %q, want %q", tracks[0].Source, SourceFile)
+	}
+}
+
+// A source this build does not understand cannot be treated as a path: doing so
+// would hand whatever it names to ffmpeg. Dropping the row is the safe reading.
+func TestNewDropsUnknownSources(t *testing.T) {
+	state := State{Tracks: []Track{
+		{ID: "a", Path: "/music/one.mp3", Source: SourceFile},
+		{ID: "b", Path: "spotify:track:xyz", Source: "spotify"},
+		{ID: "c", Path: "https://www.youtube.com/watch?v=xyz", Source: SourceYouTube},
+	}}
+
+	tracks := New(state).Snapshot().Tracks
+	if len(tracks) != 2 {
+		t.Fatalf("loaded %d tracks, want 2", len(tracks))
+	}
+	for _, track := range tracks {
+		if track.Source == "spotify" {
+			t.Error("an unknown source survived the load")
+		}
+	}
+}
+
+func TestYouTubeTrackSurvivesARoundTrip(t *testing.T) {
+	const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+	list := New(State{})
+	list.Add(Track{Path: url, Source: SourceYouTube, Name: "A song", DurationMs: 213_000})
+
+	encoded, err := json.Marshal(list.Snapshot())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var state State
+	if err := json.Unmarshal(encoded, &state); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	tracks := New(state).Snapshot().Tracks
+	if len(tracks) != 1 {
+		t.Fatalf("loaded %d tracks, want 1", len(tracks))
+	}
+	got := tracks[0]
+	if got.Path != url || got.Source != SourceYouTube || got.DurationMs != 213_000 {
+		t.Errorf("round trip lost data: %+v", got)
+	}
+	if got.ID == "" {
+		t.Error("the track came back without an id")
+	}
+}
+
+// Add is the other way into the list, and it must vet what it is given the same
+// way a load off disk does.
+func TestAddRejectsUnusableTracks(t *testing.T) {
+	list := New(State{})
+	list.Add(
+		Track{Path: "", Source: SourceFile},
+		Track{Path: "/music/one.mp3", Source: "nonsense"},
+		Track{Path: "/music/two.mp3"},
+	)
+
+	tracks := list.Snapshot().Tracks
+	if len(tracks) != 1 {
+		t.Fatalf("added %d tracks, want 1", len(tracks))
+	}
+	if tracks[0].Source != SourceFile {
+		t.Errorf("Source = %q, want it defaulted to %q", tracks[0].Source, SourceFile)
 	}
 }

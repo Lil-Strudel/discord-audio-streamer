@@ -33,14 +33,40 @@ func (r Repeat) Valid() bool {
 	return false
 }
 
+// Source is where a track's audio comes from.
+type Source string
+
+const (
+	SourceFile    Source = "file"
+	SourceYouTube Source = "youtube"
+)
+
+// Valid reports whether s is a source this build can play. A queue written by a
+// newer build, carrying a source this one has never heard of, is the way
+// anything else gets here.
+func (s Source) Valid() bool {
+	switch s {
+	case SourceFile, SourceYouTube:
+		return true
+	}
+	return false
+}
+
 // Track is one entry in the queue.
 //
 // The same file may be queued more than once, so ID rather than Path
-// identifies an entry. Everything below Path is metadata read from the file
-// after it was added, and may still be empty while that read is in flight.
+// identifies an entry. Everything below Source is metadata read after the track
+// was added, and may still be empty while that read is in flight.
 type Track struct {
-	ID         string `json:"id"`
-	Path       string `json:"path"`
+	ID string `json:"id"`
+
+	// Path is a filesystem path, or the page URL when Source is SourceYouTube.
+	// One field rather than two because every consumer — persistence, the
+	// empty-means-invalid check below, the row tooltip — wants "the thing this
+	// entry points at" and none of them care which kind it is.
+	Path   string `json:"path"`
+	Source Source `json:"source"`
+
 	Name       string `json:"name"`
 	Codec      string `json:"codec"`
 	DurationMs int64  `json:"durationMs"`
@@ -95,13 +121,9 @@ func New(state State) *List {
 	}
 
 	for _, t := range state.Tracks {
-		if t.Path == "" {
-			continue
+		if t, ok := sanitise(t); ok {
+			l.tracks = append(l.tracks, t)
 		}
-		if t.ID == "" {
-			t.ID = NewID()
-		}
-		l.tracks = append(l.tracks, t)
 	}
 
 	l.currentID = state.CurrentID
@@ -145,11 +167,9 @@ func (l *List) Add(tracks ...Track) {
 	defer l.mu.Unlock()
 
 	for _, t := range tracks {
-		if t.Path == "" {
+		t, ok := sanitise(t)
+		if !ok {
 			continue
-		}
-		if t.ID == "" {
-			t.ID = NewID()
 		}
 		l.tracks = append(l.tracks, t)
 
@@ -375,6 +395,33 @@ func (l *List) Repeat() Repeat {
 }
 
 // ------------------------------------------------------------------ internal
+
+// sanitise vets one entry on its way into the list and reports whether it is
+// worth keeping. Both entry points share it: tracks arriving from disk have had
+// no validation at all, and tracks built in code are only a little more
+// trustworthy.
+//
+// An unrecognised source is dropped rather than corrected. Guessing that it
+// means SourceFile would hand a URL written by some later build to ffmpeg as
+// though it were a path, and losing the row is the better failure — it matches
+// what an entry pointing at nothing has always done.
+func sanitise(t Track) (Track, bool) {
+	if t.Path == "" {
+		return Track{}, false
+	}
+	if t.Source == "" {
+		// Queues written before tracks had a source hold local files only.
+		t.Source = SourceFile
+	}
+	if !t.Source.Valid() {
+		return Track{}, false
+	}
+	if t.ID == "" {
+		t.ID = NewID()
+	}
+	return t, true
+}
+
 // Everything below assumes l.mu is already held.
 
 func (l *List) indexOf(id string) int {

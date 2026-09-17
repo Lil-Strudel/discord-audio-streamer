@@ -16,10 +16,11 @@ import (
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/playlist"
 )
 
-// maxFolderTracks bounds what a single folder import may add. Pointing the app
-// at a whole music library by accident should stop at something the UI can
-// still render rather than at the point the machine runs out of memory.
-const maxFolderTracks = 2000
+// maxImportTracks bounds what a single import may add, whether that is a folder
+// or a playlist link. Pointing the app at a whole music library, or at someone's
+// thousand-video playlist, should stop at something the UI can still render
+// rather than at the point the machine runs out of memory.
+const maxImportTracks = 2000
 
 // ------------------------------------------------------------------- reading
 
@@ -73,7 +74,7 @@ func (a *App) AddFiles(paths []string) error {
 		}
 
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
-			found, err := ffmpeg.FindAudioFiles(path, maxFolderTracks)
+			found, err := ffmpeg.FindAudioFiles(path, maxImportTracks)
 			if err != nil {
 				return err
 			}
@@ -113,7 +114,7 @@ func (a *App) AddFolder(dir string) error {
 		return errors.New("no folder selected")
 	}
 
-	paths, err := ffmpeg.FindAudioFiles(dir, maxFolderTracks)
+	paths, err := ffmpeg.FindAudioFiles(dir, maxImportTracks)
 	if err != nil {
 		return err
 	}
@@ -159,7 +160,7 @@ func (a *App) ClearQueue() error {
 	a.queue.Clear()
 
 	a.mu.Lock()
-	a.track, a.trackPath = nil, ""
+	a.track = nil
 	a.mu.Unlock()
 
 	a.saveQueue()
@@ -177,7 +178,7 @@ func (a *App) PlayTrack(id string) error {
 	}
 
 	a.saveQueue()
-	return a.playTrack(track, 0)
+	return a.playTrack(track, 0, false)
 }
 
 // NextTrack skips forward. It keeps playing if something already was, and
@@ -212,14 +213,14 @@ func (a *App) step(track playlist.Track, ok bool) error {
 	// Only follow the move with audio if audio was already flowing.
 	a.mu.Lock()
 	wasPlaying := a.mode == ModePlayer
-	a.track, a.trackPath = &track, track.Path
+	a.track = &track
 	a.mu.Unlock()
 
 	if !wasPlaying {
 		a.emitStatus()
 		return nil
 	}
-	return a.playTrack(track, 0)
+	return a.playTrack(track, 0, false)
 }
 
 // ------------------------------------------------------------------- options
@@ -250,9 +251,10 @@ func (a *App) SetRepeat(mode string) error {
 // shows a usable list from the first moment.
 func newTrack(path string) playlist.Track {
 	return playlist.Track{
-		ID:   playlist.NewID(),
-		Path: path,
-		Name: filepath.Base(path),
+		ID:     playlist.NewID(),
+		Path:   path,
+		Source: playlist.SourceFile,
+		Name:   filepath.Base(path),
 	}
 }
 
@@ -271,6 +273,13 @@ func (a *App) probeTracks(tracks []playlist.Track) {
 	defer flush.Stop()
 
 	for _, track := range tracks {
+		// Only a local file has a header to read. A link's metadata came from
+		// the listing, and handing its URL to ffmpeg here would be a needless
+		// failure at best and a download at worst.
+		if track.Source != playlist.SourceFile {
+			continue
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		meta, err := ffmpeg.Probe(ctx, track.Path)
 		cancel()

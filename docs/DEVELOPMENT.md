@@ -10,7 +10,7 @@ here) and stderr capture for crash logs; everything else is shared.
 On Arch:
 
 ```sh
-sudo pacman -S --needed webkit2gtk-4.1 gtk3 opus pkgconf ffmpeg nodejs npm
+sudo pacman -S --needed webkit2gtk-4.1 gtk3 opus pkgconf ffmpeg yt-dlp nodejs npm
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
 ```
 
@@ -46,6 +46,26 @@ error:
   Wails still defaults to.
 - **`embedffmpeg`** — bundles ffmpeg into the executable. Release builds only;
   without it ffmpeg is taken from `PATH`, which is what you want in development.
+- **`embedytdlp`** — the same for yt-dlp, which is what turns a YouTube link into
+  something ffmpeg can decode. Also release-only; without it yt-dlp comes from
+  `PATH`, and if it is not there the *Add link* button explains that rather than
+  the app refusing to start.
+
+Both embed the binary through `internal/embedbin`, which unpacks it into the
+user's cache directory under a name derived from a hash of its contents. That is
+what makes an app update install its own copy instead of silently reusing the
+previous release's.
+
+A bundled yt-dlp goes stale: YouTube changes extraction every few weeks, and the
+copy in a release is frozen at build time. Rather than let it update itself —
+which would invalidate the content hash its filename is built from — a release
+build honours `DAS_YTDLP`:
+
+```sh
+DAS_YTDLP=/usr/bin/yt-dlp ./DiscordAudioStreamer.exe
+```
+
+That is the whole answer to "links stopped working" without cutting a release.
 
 Note that a plain `go build` succeeds without compiling Wails' desktop backend
 at all, because that lives behind Wails' own `desktop` tag. It proves the code
@@ -80,6 +100,21 @@ plain unit tests. Above that:
 - `internal/pipeline` has integration tests that decode a real file, encode it,
   and pace it into a fake voice connection, which is the seam the unit tests
   cannot reach.
+- `internal/ytdlp` never touches the network by default: the command lines are
+  built in one place and the JSON yt-dlp produces is parsed in another, so both
+  are checked against fixtures. The tests that do reach YouTube are opt-in:
+
+  ```sh
+  DAS_YTDLP_LIVE=1 go test ./internal/ytdlp/ -run Live -v
+  ```
+
+  They are guarded by that variable rather than by `-short` because CI runs the
+  suite without `-short`, and a shared runner's address is routinely served a bot
+  check instead of a video — which would be a red build reporting nothing about
+  this code. Run them by hand after touching a command line or a parser.
+- `internal/ffmpeg` also decodes over HTTP against an `httptest` server, which
+  covers the network input options and the range request a seek turns into
+  without depending on anything outside the machine.
 - `internal/wasapi` keeps its PCM conversion — sample formats, channel downmix
   and resampling — in a file with no Windows dependency, so the fiddliest part of
   the one package that cannot run in development is still covered by tests.
@@ -119,8 +154,9 @@ Two things about that package are worth knowing before editing it:
 
 ## Bindings
 
-`app.go` and `app_audio.go` are the whole surface exposed to the frontend. After
-changing a bound method's signature, regenerate the TypeScript:
+`app.go`, `app_audio.go`, `app_queue.go` and `app_link.go` are the whole surface
+exposed to the frontend. After changing a bound method's signature, or a type it
+returns, regenerate the TypeScript:
 
 ```sh
 wails generate module -tags webkit2_41

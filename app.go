@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -16,6 +17,7 @@ import (
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/logging"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/pipeline"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/playlist"
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/ytdlp"
 )
 
 // Events emitted to the frontend.
@@ -70,6 +72,11 @@ type Status struct {
 	Settings  config.Settings `json:"settings"`
 	FFmpegErr string          `json:"ffmpegError"`
 
+	// LinkErr reports that YouTube links are unavailable. It is separate from
+	// FFmpegErr because it disables one button rather than the whole app, and
+	// showing it in the same permanent banner would read as "ffmpeg is broken".
+	LinkErr string `json:"linkError"`
+
 	// ServersLoaded distinguishes a bot that is in no servers from one whose
 	// server list is still arriving, which look identical otherwise.
 	ServersLoaded bool `json:"serversLoaded"`
@@ -105,17 +112,24 @@ type App struct {
 	// queue edit and a pipeline change to happen as one atomic step.
 	queue *playlist.List
 
+	// links caches resolved YouTube addresses; it guards itself for the same
+	// reason the queue does.
+	links ytdlp.Cache
+
+	// playSeq numbers attempts to start playback, so one that finishes after a
+	// later one started can tell that it has been overtaken. Resolving a link
+	// takes seconds, which is long enough for two seeks to land out of order.
+	playSeq atomic.Uint64
+
 	mu       sync.Mutex
 	pipe     *pipeline.Pipeline
 	mode     Mode
 	track    *playlist.Track
 	deviceID string
-	// trackPath lets a seek restart ffmpeg at a new offset, which is the only
-	// way to move within a one-way decode pipe.
-	trackPath string
 
 	telemetryStop func()
 	startupErr    string
+	linkErr       string
 }
 
 // NewApp creates the bound application object.
@@ -151,6 +165,26 @@ func (a *App) startup(ctx context.Context) {
 	if _, err := ffmpeg.Resolve(); err != nil {
 		a.logger.Error("ffmpeg is unavailable", slog.Any("err", err))
 		a.startupErr = err.Error()
+	}
+
+	// yt-dlp is checked too, but off the startup path and without blocking it.
+	// A release build unpacks a compressed binary to do this, which is work the
+	// many sessions that never paste a link should not wait for — and finding
+	// out only on the first click would hang that click instead.
+	go a.checkLinkSupport()
+}
+
+// checkLinkSupport reports whether YouTube links can be used at all, so the
+// button can say so rather than failing when it is pressed.
+func (a *App) checkLinkSupport() {
+	if _, err := ytdlp.Resolve(); err != nil {
+		a.logger.Warn("YouTube links are unavailable", slog.Any("err", err))
+
+		a.mu.Lock()
+		a.linkErr = err.Error()
+		a.mu.Unlock()
+
+		a.emitStatus()
 	}
 }
 
@@ -309,7 +343,6 @@ func (a *App) Disconnect() error {
 	a.pipe = nil
 	a.mode = ModeIdle
 	a.track = nil
-	a.trackPath = ""
 	a.mu.Unlock()
 
 	if pipe != nil {
@@ -371,6 +404,7 @@ func (a *App) Status() Status {
 	a.mu.Lock()
 	mode, track, deviceID := a.mode, a.track, a.deviceID
 	pipe := a.pipe
+	linkErr := a.linkErr
 	a.mu.Unlock()
 
 	status := Status{
@@ -387,6 +421,7 @@ func (a *App) Status() Status {
 		DeviceID:  deviceID,
 		Settings:  a.store.Settings(),
 		FFmpegErr: a.startupErr,
+		LinkErr:   linkErr,
 
 		ServersLoaded: a.client.GuildsLoaded(),
 	}

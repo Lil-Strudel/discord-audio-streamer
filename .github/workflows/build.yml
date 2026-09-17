@@ -177,12 +177,16 @@ jobs:
         shell: msys2 {0}
         run: ./scripts/fetch_ffmpeg.sh
 
+      - name: Fetch yt-dlp for embedding
+        shell: msys2 {0}
+        run: ./scripts/fetch_ytdlp.sh
+
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
 
       - name: Build
         run: |
-          wails build -platform windows/amd64 -tags embedffmpeg -o DiscordAudioStreamer.exe
+          wails build -platform windows/amd64 -tags "embedffmpeg embedytdlp" -o DiscordAudioStreamer.exe
 
       # The app loads libdave.dll at startup, so it has to travel with the exe.
       # The MSVC runtime it was built against is usually already on a Windows

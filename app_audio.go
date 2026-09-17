@@ -18,6 +18,10 @@ import (
 // ErrNotInVoice is returned when audio is requested with nowhere to send it.
 var ErrNotInVoice = errors.New("join a voice channel first")
 
+// skipBudget is how long the queue may spend skipping past tracks that will not
+// play before it gives up and goes idle.
+const skipBudget = 30 * time.Second
+
 // ------------------------------------------------------------------- player
 
 // Play starts, or restarts, the current queue entry from the beginning.
@@ -30,7 +34,7 @@ func (a *App) Play() error {
 	// Current settles on the first entry when nothing has been chosen yet, so
 	// that choice has to be written down like any other.
 	a.saveQueue()
-	return a.playTrack(track, 0)
+	return a.playTrack(track, 0, false)
 }
 
 // SeekTo jumps to a position in the playing track.
@@ -49,7 +53,7 @@ func (a *App) SeekTo(positionMs int64) error {
 	if track == nil {
 		return errors.New("no track loaded")
 	}
-	return a.playTrack(*track, time.Duration(positionMs)*time.Millisecond)
+	return a.playTrack(*track, time.Duration(positionMs)*time.Millisecond, false)
 }
 
 // playTrack decodes a queue entry into the pipeline and starts it at offset.
@@ -57,7 +61,10 @@ func (a *App) SeekTo(positionMs int64) error {
 // Every route into playback goes through here — pressing play, seeking, picking
 // a row, skipping, and a track ending on its own — so there is one place that
 // knows what "now playing" means.
-func (a *App) playTrack(track playlist.Track, offset time.Duration) error {
+//
+// auto marks the queue advancing by itself rather than the user asking for
+// something, which only changes how long a link is given to resolve.
+func (a *App) playTrack(track playlist.Track, offset time.Duration, auto bool) error {
 	a.mu.Lock()
 	pipe := a.pipe
 	a.mu.Unlock()
@@ -69,18 +76,36 @@ func (a *App) playTrack(track playlist.Track, offset time.Duration) error {
 		return errors.New("no track loaded")
 	}
 
-	// ffmpeg is started before the source is swapped, so the gap between the
-	// old source ending and the new one producing is as short as it can be.
-	src, err := ffmpeg.OpenFile(a.ctx, track.Path, offset)
+	// Claim this attempt before doing anything slow. Working out where a link's
+	// audio lives takes seconds, which is long enough for a second seek to be
+	// requested and finish first; without a generation to compare against, the
+	// earlier one would then overwrite the later and playback would jump back.
+	seq := a.playSeq.Add(1)
+
+	input, err := a.resolveInput(a.ctx, track, auto)
 	if err != nil {
 		return err
+	}
+
+	// ffmpeg is started before the source is swapped, so the gap between the
+	// old source ending and the new one producing is as short as it can be.
+	src, err := input.open(a.ctx, offset)
+	if err != nil {
+		return err
+	}
+
+	if a.playSeq.Load() != seq {
+		// Overtaken while we were working. Whatever started since is the one
+		// the user asked for, so this decode is closed rather than swapped in.
+		_ = src.Close()
+		return nil
 	}
 
 	pipe.SetFileSource(src, offset)
 
 	a.mu.Lock()
 	a.mode = ModePlayer
-	a.track, a.trackPath = &track, track.Path
+	a.track = &track
 	a.mu.Unlock()
 
 	a.startTelemetry()
@@ -128,15 +153,26 @@ func (a *App) onTrackEnd() {
 	// next so that repeat-one cannot retry the same dead file forever, and the
 	// number of attempts is bounded by the queue length so a queue of entirely
 	// broken paths stops rather than spinning.
+	//
+	// The attempt count alone stopped being enough once a track could be a
+	// link: a dead file fails in milliseconds, but a dead link fails only when
+	// yt-dlp gives up, so a queue full of them would grind on in silence for
+	// long enough to look like a hang. The clock bounds that.
+	deadline := time.Now().Add(skipBudget)
+
 	for attempts := a.queue.Len(); ok && attempts > 0; attempts-- {
 		a.saveQueue()
 
-		err := a.playTrack(track, 0)
+		err := a.playTrack(track, 0, true)
 		if err == nil {
 			return
 		}
 		a.reportSkip(track, err)
 
+		if time.Now().After(deadline) {
+			a.emit(eventError, "Stopped after several tracks in a row would not play.")
+			break
+		}
 		track, ok = a.queue.Next(false)
 	}
 
@@ -154,6 +190,11 @@ func (a *App) idle() {
 }
 
 func (a *App) reportSkip(track playlist.Track, err error) {
+	// A link that failed to play may simply have been resolved too long ago, so
+	// whatever was remembered about it is dropped and the next attempt asks
+	// again rather than reusing a dead address.
+	a.forgetResolved(track)
+
 	a.logger.Error("skipping a track that would not play",
 		slog.String("path", track.Path), slog.Any("err", err))
 	a.emit(eventError, "Skipped "+track.Name+": "+err.Error())
@@ -205,7 +246,7 @@ func (a *App) StartCapture(deviceID string) error {
 
 	a.mu.Lock()
 	a.mode, a.deviceID = ModeCapture, deviceID
-	a.track, a.trackPath = nil, ""
+	a.track = nil
 	a.mu.Unlock()
 
 	_ = a.store.Update(func(s *config.Settings) { s.LastCaptureDeviceID = deviceID })

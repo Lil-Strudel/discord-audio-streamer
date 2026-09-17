@@ -91,7 +91,7 @@
 </script>
 
 <div class="player">
-  <QueueList {queue} {canPlay} {onError} />
+  <QueueList {queue} {canPlay} linkError={status.linkError} {onError} />
 
   <div class="now">
     {#if track}

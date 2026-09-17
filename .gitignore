@@ -11,8 +11,9 @@
 /frontend/node_modules/
 /frontend/wailsjs/
 
-# Embedded ffmpeg asset (fetched at build time, never committed)
+# Embedded helper binaries (fetched at build time, never committed)
 /internal/ffmpeg/assets/*.gz
+/internal/ytdlp/assets/*.gz
 
 # Local toolchain / scratch
 /.task/
