@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/subproc"
 )
 
 // stderrTailLines is how much of ffmpeg's stderr to keep. ffmpeg reports the
@@ -50,7 +52,7 @@ func Start(ctx context.Context, bin string, args []string, onStderrLine func(str
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd := exec.CommandContext(ctx, bin, args...)
-	hideConsoleWindow(cmd)
+	subproc.Hide(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
