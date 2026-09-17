@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/playlist"
 )
 
 // appDir is the folder name used under the user's configuration directory:
@@ -40,6 +42,11 @@ type Settings struct {
 	// LastCaptureDeviceID is remembered so a returning user does not have to
 	// hunt for their virtual cable again.
 	LastCaptureDeviceID string `json:"lastCaptureDeviceId"`
+
+	// Queue is the working playlist, restored on the next run. Only the visible
+	// order is kept: a shuffled order is regenerated on load, so a restart
+	// reshuffles rather than replaying the previous run's sequence.
+	Queue playlist.State `json:"queue"`
 }
 
 // DefaultSettings returns the settings a first-time user starts with.
@@ -245,5 +252,38 @@ func withDefaults(s Settings) Settings {
 	if s.CaptureBufferFrames <= 0 {
 		s.CaptureBufferFrames = defaults.CaptureBufferFrames
 	}
+	s.Queue = withQueueDefaults(s.Queue)
 	return s
+}
+
+// withQueueDefaults drops queue entries a hand-edited or older file could carry
+// that the playlist could not make sense of. The playlist package repeats these
+// checks when it loads the state, but doing them here too means a bad entry is
+// dropped from the file on the next save rather than lingering in it.
+func withQueueDefaults(q playlist.State) playlist.State {
+	tracks := q.Tracks[:0:0]
+	for _, t := range q.Tracks {
+		if t.Path == "" || t.ID == "" {
+			continue
+		}
+		tracks = append(tracks, t)
+	}
+	q.Tracks = tracks
+
+	if !q.Repeat.Valid() {
+		q.Repeat = playlist.RepeatOff
+	}
+
+	// A current id naming no entry would leave the player pointing at nothing.
+	found := false
+	for _, t := range q.Tracks {
+		if t.ID == q.CurrentID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		q.CurrentID = ""
+	}
+	return q
 }

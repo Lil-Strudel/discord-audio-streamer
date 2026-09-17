@@ -12,6 +12,7 @@ import (
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/config"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/ffmpeg"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/pipeline"
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/playlist"
 )
 
 // ErrNotInVoice is returned when audio is requested with nowhere to send it.
@@ -19,59 +20,20 @@ var ErrNotInVoice = errors.New("join a voice channel first")
 
 // ------------------------------------------------------------------- player
 
-// PickAudioFile opens a native file chooser and returns the chosen path.
-func (a *App) PickAudioFile() (string, error) {
-	return wruntime.OpenFileDialog(a.ctx, wruntime.OpenDialogOptions{
-		Title: "Choose an audio file",
-		Filters: []wruntime.FileFilter{
-			{
-				DisplayName: "Audio files",
-				// ffmpeg decodes far more than this, but a filter listing every
-				// container it understands is not a usable dialog. Users can
-				// still pick anything through "All files".
-				Pattern: "*.mp3;*.wav;*.flac;*.ogg;*.opus;*.m4a;*.aac;*.wma;*.aiff;*.alac;*.mp4;*.webm;*.mkv",
-			},
-			{DisplayName: "All files", Pattern: "*.*"},
-		},
-	})
+// Play starts, or restarts, the current queue entry from the beginning.
+func (a *App) Play() error {
+	track, ok := a.queue.Current()
+	if !ok {
+		return errors.New("the queue is empty")
+	}
+
+	// Current settles on the first entry when nothing has been chosen yet, so
+	// that choice has to be written down like any other.
+	a.saveQueue()
+	return a.playTrack(track, 0)
 }
 
-// LoadTrack reads a file's metadata and makes it the current track. It does not
-// start playback, so the user can see what they picked before anyone hears it.
-func (a *App) LoadTrack(path string) (TrackInfo, error) {
-	if path == "" {
-		return TrackInfo{}, errors.New("no file selected")
-	}
-
-	ctx, cancel := context.WithTimeout(a.ctx, 20*time.Second)
-	defer cancel()
-
-	meta, err := ffmpeg.Probe(ctx, path)
-	if err != nil {
-		return TrackInfo{}, err
-	}
-
-	track := TrackInfo{
-		Path:       meta.Path,
-		Name:       meta.DisplayName(),
-		Codec:      meta.Codec,
-		DurationMs: meta.Duration.Milliseconds(),
-	}
-
-	a.stopSource()
-
-	a.mu.Lock()
-	a.track, a.trackPath, a.mode = &track, path, ModePlayer
-	a.mu.Unlock()
-
-	a.emitStatus()
-	return track, nil
-}
-
-// Play starts, or restarts, the loaded track from the beginning.
-func (a *App) Play() error { return a.playFrom(0) }
-
-// SeekTo jumps to a position in the loaded track.
+// SeekTo jumps to a position in the playing track.
 //
 // A decode pipe runs one way with no way to ask it to jump, so seeking restarts
 // ffmpeg at a new offset. That is why this and Play share an implementation.
@@ -79,22 +41,37 @@ func (a *App) SeekTo(positionMs int64) error {
 	if positionMs < 0 {
 		positionMs = 0
 	}
-	return a.playFrom(time.Duration(positionMs) * time.Millisecond)
+
+	a.mu.Lock()
+	track := a.track
+	a.mu.Unlock()
+
+	if track == nil {
+		return errors.New("no track loaded")
+	}
+	return a.playTrack(*track, time.Duration(positionMs)*time.Millisecond)
 }
 
-func (a *App) playFrom(offset time.Duration) error {
+// playTrack decodes a queue entry into the pipeline and starts it at offset.
+//
+// Every route into playback goes through here — pressing play, seeking, picking
+// a row, skipping, and a track ending on its own — so there is one place that
+// knows what "now playing" means.
+func (a *App) playTrack(track playlist.Track, offset time.Duration) error {
 	a.mu.Lock()
-	pipe, path := a.pipe, a.trackPath
+	pipe := a.pipe
 	a.mu.Unlock()
 
 	if pipe == nil || !a.client.State().InVoice {
 		return ErrNotInVoice
 	}
-	if path == "" {
+	if track.Path == "" {
 		return errors.New("no track loaded")
 	}
 
-	src, err := ffmpeg.OpenFile(a.ctx, path, offset)
+	// ffmpeg is started before the source is swapped, so the gap between the
+	// old source ending and the new one producing is as short as it can be.
+	src, err := ffmpeg.OpenFile(a.ctx, track.Path, offset)
 	if err != nil {
 		return err
 	}
@@ -103,6 +80,7 @@ func (a *App) playFrom(offset time.Duration) error {
 
 	a.mu.Lock()
 	a.mode = ModePlayer
+	a.track, a.trackPath = &track, track.Path
 	a.mu.Unlock()
 
 	a.startTelemetry()
@@ -137,13 +115,48 @@ func (a *App) Stop() error {
 	return nil
 }
 
+// onTrackEnd advances the queue when a track runs out.
+//
+// It is called from the pipeline's frame-provider goroutine, so it must not
+// block that goroutine for long: starting the next track is an ffmpeg spawn,
+// which is short enough that the buffered audio covers it.
 func (a *App) onTrackEnd() {
+	track, ok := a.queue.Next(true)
+
+	// A track whose file has been moved or deleted since it was queued must not
+	// stall everything behind it. A failure skips on, using the manual sense of
+	// next so that repeat-one cannot retry the same dead file forever, and the
+	// number of attempts is bounded by the queue length so a queue of entirely
+	// broken paths stops rather than spinning.
+	for attempts := a.queue.Len(); ok && attempts > 0; attempts-- {
+		a.saveQueue()
+
+		err := a.playTrack(track, 0)
+		if err == nil {
+			return
+		}
+		a.reportSkip(track, err)
+
+		track, ok = a.queue.Next(false)
+	}
+
+	a.idle()
+}
+
+// idle drops out of playback, leaving the queue as it is.
+func (a *App) idle() {
 	a.mu.Lock()
 	a.mode = ModeIdle
 	a.mu.Unlock()
 
 	a.emitStatus()
 	a.emit(eventTelemetry, a.telemetry())
+}
+
+func (a *App) reportSkip(track playlist.Track, err error) {
+	a.logger.Error("skipping a track that would not play",
+		slog.String("path", track.Path), slog.Any("err", err))
+	a.emit(eventError, "Skipped "+track.Name+": "+err.Error())
 }
 
 // ----------------------------------------------------------------- streamer

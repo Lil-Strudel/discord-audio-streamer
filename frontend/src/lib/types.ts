@@ -1,3 +1,5 @@
+import { playlist } from "../../wailsjs/go/models";
+
 // Telemetry has no generated binding because it is only ever pushed as an
 // event, never returned from a bound method. Keep this in step with the Go
 // struct of the same name in app.go.
@@ -32,6 +34,14 @@ export const emptyTelemetry: Telemetry = {
   maxLatenessMs: 0,
   encryptionReady: false,
 };
+
+/** The queue before the backend has reported one, so nothing has to null-check it. */
+export const emptyQueue: playlist.State = playlist.State.createFrom({
+  tracks: [],
+  currentId: "",
+  shuffle: false,
+  repeat: "off",
+});
 
 /** Formats milliseconds as m:ss, or h:mm:ss for anything over an hour. */
 export function formatTime(ms: number): string {

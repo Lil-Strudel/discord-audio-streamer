@@ -5,9 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/playlist"
 )
 
 func newStore(t *testing.T) *Store {
@@ -28,7 +31,7 @@ func TestFreshStoreHasDefaultsAndNoToken(t *testing.T) {
 	if _, err := s.Token(); !errors.Is(err, ErrNoToken) {
 		t.Errorf("Token = %v, want ErrNoToken", err)
 	}
-	if got, want := s.Settings(), DefaultSettings(); got != want {
+	if got, want := s.Settings(), DefaultSettings(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Settings = %+v, want %+v", got, want)
 	}
 }
@@ -114,13 +117,22 @@ func TestSettingsPersist(t *testing.T) {
 		LastGuildID:         "123",
 		LastChannelID:       "456",
 		LastCaptureDeviceID: "@device_cm_{abc}",
+		Queue: playlist.State{
+			Tracks: []playlist.Track{
+				{ID: "1", Path: "/music/a.mp3", Name: "A", Codec: "mp3", DurationMs: 1000},
+				{ID: "2", Path: "/music/b.flac", Name: "B", Codec: "flac", DurationMs: 2000},
+			},
+			CurrentID: "2",
+			Shuffle:   true,
+			Repeat:    playlist.RepeatAll,
+		},
 	}
 	if err := s.SetSettings(want); err != nil {
 		t.Fatalf("SetSettings: %v", err)
 	}
 
 	reopened, _ := OpenAt(path)
-	if got := reopened.Settings(); got != want {
+	if got := reopened.Settings(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Settings = %+v, want %+v", got, want)
 	}
 }
@@ -174,7 +186,7 @@ func TestCorruptFileStartsFreshInsteadOfFailing(t *testing.T) {
 	if s.HasToken() {
 		t.Error("a corrupt file produced a token")
 	}
-	if got, want := s.Settings(), DefaultSettings(); got != want {
+	if got, want := s.Settings(), DefaultSettings(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Settings = %+v, want the defaults", got)
 	}
 }
@@ -246,5 +258,61 @@ func TestSealRoundTrip(t *testing.T) {
 	}
 	if string(got) != "hello" {
 		t.Fatalf("round trip gave %q", got)
+	}
+}
+
+// The queue comes off disk and may have been hand-edited or written by an older
+// build, so nothing in it can be taken on trust.
+func TestQueueEntriesWithoutAPathOrIDAreDropped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	s, _ := OpenAt(path)
+
+	err := s.Update(func(cfg *Settings) {
+		cfg.Queue.Tracks = []playlist.Track{
+			{ID: "1", Path: "/music/a.mp3"},
+			{ID: "2"},              // no path
+			{Path: "/music/c.mp3"}, // no id
+		}
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	got := s.Settings().Queue.Tracks
+	if len(got) != 1 || got[0].ID != "1" {
+		t.Fatalf("Queue.Tracks = %+v, want only the complete entry", got)
+	}
+}
+
+func TestUnknownRepeatModeFallsBackToOff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"version":1,"settings":{"queue":{"repeat":"sideways"}}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := OpenAt(path)
+	if err != nil {
+		t.Fatalf("OpenAt: %v", err)
+	}
+	if got := s.Settings().Queue.Repeat; got != playlist.RepeatOff {
+		t.Fatalf("Repeat = %q, want %q", got, playlist.RepeatOff)
+	}
+}
+
+func TestACurrentIDNamingNoQueuedTrackIsCleared(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	s, _ := OpenAt(path)
+
+	err := s.Update(func(cfg *Settings) {
+		cfg.Queue.Tracks = []playlist.Track{{ID: "1", Path: "/music/a.mp3"}}
+		cfg.Queue.CurrentID = "gone"
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if got := s.Settings().Queue.CurrentID; got != "" {
+		t.Fatalf("CurrentID = %q, want empty", got)
 	}
 }

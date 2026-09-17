@@ -15,6 +15,7 @@ import (
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/ffmpeg"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/logging"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/pipeline"
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/playlist"
 )
 
 // Events emitted to the frontend.
@@ -29,6 +30,11 @@ const (
 
 	// eventError carries a message worth showing the user.
 	eventError = "error"
+
+	// eventQueue fires when the playlist changes. It is separate from the
+	// status because a queue can hold hundreds of tracks, and re-sending all of
+	// them every time the volume knob moves would be wasteful.
+	eventQueue = "queue"
 )
 
 // telemetryInterval is how often the meter and position are pushed. Fast enough
@@ -45,14 +51,6 @@ const (
 	ModeCapture Mode = "capture"
 )
 
-// TrackInfo describes the loaded file for the player UI.
-type TrackInfo struct {
-	Path       string `json:"path"`
-	Name       string `json:"name"`
-	Codec      string `json:"codec"`
-	DurationMs int64  `json:"durationMs"`
-}
-
 // Status is the whole view state, delivered in one call so the UI never has to
 // stitch together several round trips that could disagree with each other.
 type Status struct {
@@ -67,7 +65,7 @@ type Status struct {
 	Mode      Mode            `json:"mode"`
 	Playing   bool            `json:"playing"`
 	Paused    bool            `json:"paused"`
-	Track     *TrackInfo      `json:"track"`
+	Track     *playlist.Track `json:"track"`
 	DeviceID  string          `json:"deviceId"`
 	Settings  config.Settings `json:"settings"`
 	FFmpegErr string          `json:"ffmpegError"`
@@ -103,13 +101,17 @@ type App struct {
 	store  *config.Store
 	client *discord.Client
 
+	// queue is safe to use without a.mu: it guards itself, and nothing needs a
+	// queue edit and a pipeline change to happen as one atomic step.
+	queue *playlist.List
+
 	mu       sync.Mutex
 	pipe     *pipeline.Pipeline
 	mode     Mode
-	track    *TrackInfo
+	track    *playlist.Track
 	deviceID string
-	// trackPath and seekBase let a seek restart ffmpeg at a new offset, which
-	// is the only way to move within a one-way decode pipe.
+	// trackPath lets a seek restart ffmpeg at a new offset, which is the only
+	// way to move within a one-way decode pipe.
 	trackPath string
 
 	telemetryStop func()
@@ -125,6 +127,9 @@ func NewApp(logger *slog.Logger) *App {
 		logger: logger,
 		client: discord.New(logger),
 		mode:   ModeIdle,
+		// A real queue is restored from the configuration during startup; this
+		// empty one keeps the bound methods safe to call before that happens.
+		queue: playlist.New(playlist.State{}),
 	}
 }
 
@@ -138,6 +143,7 @@ func (a *App) startup(ctx context.Context) {
 		store, _ = config.OpenAt("")
 	}
 	a.store = store
+	a.queue = playlist.New(store.Settings().Queue)
 
 	// Resolve ffmpeg once at startup rather than at the first play, so a broken
 	// installation is reported while the user is still reading the setup screen

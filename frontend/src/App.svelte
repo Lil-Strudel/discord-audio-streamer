@@ -1,8 +1,8 @@
 <script lang="ts">
   import { EventsOn } from "../wailsjs/runtime/runtime";
-  import { ClearToken, LogPath, OpenLogFolder, Status } from "../wailsjs/go/main/App";
-  import type { main } from "../wailsjs/go/models";
-  import { emptyTelemetry, errorText, type Telemetry } from "./lib/types";
+  import { ClearToken, LogPath, OpenLogFolder, Queue, Status } from "../wailsjs/go/main/App";
+  import type { main, playlist } from "../wailsjs/go/models";
+  import { emptyQueue, emptyTelemetry, errorText, type Telemetry } from "./lib/types";
 
   import ConnectionBar from "./components/ConnectionBar.svelte";
   import PlayerView from "./components/PlayerView.svelte";
@@ -14,6 +14,7 @@
   let screen = $state<Screen>("loading");
   let status = $state<main.Status | null>(null);
   let telemetry = $state<Telemetry>(emptyTelemetry);
+  let queue = $state<playlist.State>(emptyQueue);
   let tab = $state<"player" | "stream">("player");
   let banner = $state("");
   let logPath = $state("");
@@ -40,11 +41,18 @@
   // The backend pushes status whenever the shape of the UI should change, and
   // telemetry continuously while audio flows. Polling either would either lag
   // the meters or waste work while idle.
+  //
+  // The queue is separate from the status because it is large and changes
+  // rarely, so it is not worth re-sending every time the volume moves.
   EventsOn("status", (s: main.Status) => (status = s));
   EventsOn("telemetry", (t: Telemetry) => (telemetry = t));
+  EventsOn("queue", (q: playlist.State) => (queue = q));
   EventsOn("error", (message: string) => (banner = message));
 
   refresh();
+  Queue()
+    .then((q: playlist.State) => (queue = q))
+    .catch(() => {});
   LogPath()
     .then((path: string) => (logPath = path))
     .catch(() => {});
@@ -110,7 +118,7 @@
 
     <nav>
       <button class:selected={tab === "player"} onclick={() => (tab = "player")}>
-        Play a file
+        Playlist
       </button>
       <button class:selected={tab === "stream"} onclick={() => (tab = "stream")}>
         Stream desktop audio
@@ -119,7 +127,7 @@
 
     <section>
       {#if tab === "player"}
-        <PlayerView {status} {telemetry} onError={(m) => (banner = m)} />
+        <PlayerView {status} {telemetry} {queue} onError={(m) => (banner = m)} />
       {:else}
         <StreamView {status} {telemetry} onError={(m) => (banner = m)} />
       {/if}

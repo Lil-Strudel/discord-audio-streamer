@@ -33,11 +33,37 @@ Treat the token like a password: anyone who has it controls your bot. The app
 stores it encrypted, tied to your Windows account, so another user on the same
 computer cannot read it. You can change or remove it later from the ⚙ button.
 
-## Playing a file
+## Playing files
 
-Connect, pick a server and a voice channel, press **Join**, then choose a file.
+Connect, pick a server and a voice channel, press **Join**, then fill the queue.
 Play, pause, stop, seek and volume all work as you would expect. mp3, wav, flac,
 ogg, opus, m4a and most other audio formats are supported.
+
+### The queue
+
+Three ways to add tracks:
+
+- **Add files** picks one or several at once.
+- **Add folder** takes everything under a folder, subfolders included.
+- **Dragging** files or folders onto the window adds them too.
+
+Click a track's name to play it. Drag a row up or down to reorder it, or use the
+× on the right to remove it. Names and durations appear a moment after a large
+import: the app reads each file's tags in the background so the list shows up
+immediately.
+
+When a track finishes the next one starts by itself. The two buttons on the
+right of the transport row change that:
+
+- **🔀 Shuffle** plays in a random order. Whatever is playing keeps playing; only
+  what comes after it is reordered. Turning it off restores the list order.
+- **🔁 Repeat** cycles through off, repeat-all (start again from the top) and
+  repeat-one 🔂 (the current track loops). Pressing next still moves on while
+  repeat-one is set.
+
+A track whose file has been moved or deleted is skipped with a message rather
+than stopping the queue. The queue, the playback modes and your place in it are
+remembered until the next run.
 
 ## Streaming your desktop audio
 

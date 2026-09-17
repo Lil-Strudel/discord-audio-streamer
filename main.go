@@ -44,6 +44,13 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 15, G: 17, B: 21, A: 1},
 		OnStartup:        app.startup,
 		OnShutdown:       app.shutdown,
+		DragAndDrop: &options.DragAndDrop{
+			// Dropping files onto the queue is the quickest way to fill it.
+			// Wails hands the frontend real filesystem paths, which is the only
+			// form of any use here: everything downstream is an ffmpeg process
+			// reading a file, not a browser File object.
+			EnableFileDrop: true,
+		},
 		Windows: &windows.Options{
 			// The app is mostly dark; matching the theme avoids a white flash
 			// while the webview loads.
