@@ -174,6 +174,11 @@ func (p *Pipeline) Stop() {
 // produce reads the source and fills the ring until it ends or is closed.
 func (p *Pipeline) produce(s *stream) {
 	defer close(s.done)
+	// Closing the ring once the source has nothing more to give keeps the
+	// frames already buffered readable, but stops an empty read from counting
+	// as an underrun. Otherwise a finished queue, which leaves its last stream
+	// attached, would report fifty underruns a second for as long as it idles.
+	defer s.ring.Close()
 	defer s.sourceDone.Store(true)
 
 	framer := audio.NewFramer(s.source)

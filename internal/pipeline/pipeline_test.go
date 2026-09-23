@@ -135,6 +135,25 @@ func TestFileSourceProducesFramesThenStops(t *testing.T) {
 	}
 }
 
+// Stream health is shown during playback, so reads after a file has ended must
+// not be counted as underruns: the source is finished, not starved.
+func TestFinishedFileDoesNotCountUnderruns(t *testing.T) {
+	p := newPipeline(t)
+	p.SetFileSource(&fakeSource{data: tonePCM(2, 8000)}, 0)
+
+	if !waitFor(t, time.Second, func() bool { return p.Stats().BufferedFrames >= 2 }) {
+		t.Fatalf("source never filled the buffer: %+v", p.Stats())
+	}
+	if !waitFor(t, time.Second, func() bool { return p.current.sourceDone.Load() }) {
+		t.Fatal("source never reported finishing")
+	}
+
+	drain(t, p, 50)
+	if got := p.Stats().Underruns; got != 0 {
+		t.Fatalf("Underruns = %d after the file ended, want 0", got)
+	}
+}
+
 // A gap mid-stream is not the same as the end of a stream: it must be filled
 // with silence so Discord does not cut the tail off every hiccup.
 func TestLiveSourceFillsGapsWithSilence(t *testing.T) {
