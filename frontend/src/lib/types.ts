@@ -1,4 +1,4 @@
-import { playlist } from "../../wailsjs/go/models";
+import { main, playlist } from "../../wailsjs/go/models";
 
 // Telemetry has no generated binding because it is only ever pushed as an
 // event, never returned from a bound method. Keep this in step with the Go
@@ -17,6 +17,15 @@ export interface Telemetry {
   latenessMs: number;
   maxLatenessMs: number;
   encryptionReady: boolean;
+  /** One entry per soundboard track. */
+  soundboard: ChannelStats[];
+}
+
+/** A soundboard track's level and position. Mirrors mixer.ChannelStats. */
+export interface ChannelStats {
+  rms: number;
+  peak: number;
+  positionMs: number;
 }
 
 export const emptyTelemetry: Telemetry = {
@@ -33,6 +42,7 @@ export const emptyTelemetry: Telemetry = {
   latenessMs: 0,
   maxLatenessMs: 0,
   encryptionReady: false,
+  soundboard: [],
 };
 
 /** The queue before the backend has reported one, so nothing has to null-check it. */
@@ -41,6 +51,21 @@ export const emptyQueue: playlist.State = playlist.State.createFrom({
   currentId: "",
   shuffle: false,
   repeat: "off",
+});
+
+/** The soundboard before the backend has reported one: four idle tracks. */
+export const emptySoundboard: main.SoundboardState = main.SoundboardState.createFrom({
+  tracks: ["Music", "Ambience", "Effects", "Extra"].map((name) =>
+    main.SoundboardTrack.createFrom({
+      name,
+      folder: "",
+      volumePercent: 100,
+      loop: false,
+      view: "grid",
+      path: "",
+      paused: false,
+    }),
+  ),
 });
 
 /** Formats milliseconds as m:ss, or h:mm:ss for anything over an hour. */

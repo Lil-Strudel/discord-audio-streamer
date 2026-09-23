@@ -1,11 +1,12 @@
 <script lang="ts">
   import { EventsOn } from "../wailsjs/runtime/runtime";
-  import { ClearToken, LogPath, OpenLogFolder, Queue, Status } from "../wailsjs/go/main/App";
+  import { ClearToken, LogPath, OpenLogFolder, Queue, Soundboard, Status } from "../wailsjs/go/main/App";
   import type { main, playlist } from "../wailsjs/go/models";
-  import { emptyQueue, emptyTelemetry, errorText, type Telemetry } from "./lib/types";
+  import { emptyQueue, emptySoundboard, emptyTelemetry, errorText, type Telemetry } from "./lib/types";
 
   import ConnectionBar from "./components/ConnectionBar.svelte";
   import PlayerView from "./components/PlayerView.svelte";
+  import SoundboardView from "./components/SoundboardView.svelte";
   import StreamView from "./components/StreamView.svelte";
   import TokenSetup from "./components/TokenSetup.svelte";
 
@@ -15,7 +16,8 @@
   let status = $state<main.Status | null>(null);
   let telemetry = $state<Telemetry>(emptyTelemetry);
   let queue = $state<playlist.State>(emptyQueue);
-  let tab = $state<"player" | "stream">("player");
+  let soundboard = $state<main.SoundboardState>(emptySoundboard);
+  let tab = $state<"player" | "stream" | "soundboard">("player");
   let banner = $state("");
   let logPath = $state("");
 
@@ -42,16 +44,21 @@
   // telemetry continuously while audio flows. Polling either would either lag
   // the meters or waste work while idle.
   //
-  // The queue is separate from the status because it is large and changes
-  // rarely, so it is not worth re-sending every time the volume moves.
+  // The queue and the soundboard are separate from the status because they
+  // are large and change rarely, so they are not worth re-sending every time
+  // the volume moves.
   EventsOn("status", (s: main.Status) => (status = s));
   EventsOn("telemetry", (t: Telemetry) => (telemetry = t));
   EventsOn("queue", (q: playlist.State) => (queue = q));
+  EventsOn("soundboard", (sb: main.SoundboardState) => (soundboard = sb));
   EventsOn("error", (message: string) => (banner = message));
 
   refresh();
   Queue()
     .then((q: playlist.State) => (queue = q))
+    .catch(() => {});
+  Soundboard()
+    .then((sb: main.SoundboardState) => (soundboard = sb))
     .catch(() => {});
   LogPath()
     .then((path: string) => (logPath = path))
@@ -123,13 +130,18 @@
       <button class:selected={tab === "stream"} onclick={() => (tab = "stream")}>
         Stream desktop audio
       </button>
+      <button class:selected={tab === "soundboard"} onclick={() => (tab = "soundboard")}>
+        Soundboard
+      </button>
     </nav>
 
     <section>
       {#if tab === "player"}
         <PlayerView {status} {telemetry} {queue} onError={(m) => (banner = m)} />
-      {:else}
+      {:else if tab === "stream"}
         <StreamView {status} {telemetry} onError={(m) => (banner = m)} />
+      {:else}
+        <SoundboardView {status} {telemetry} {soundboard} onError={(m) => (banner = m)} />
       {/if}
     </section>
   {/if}

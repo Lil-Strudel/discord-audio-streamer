@@ -93,6 +93,39 @@ If links stop working across the board, it is almost certainly because YouTube
 changed something and the copy of the downloader inside the app has gone stale.
 A newer release of this app fixes that.
 
+## The soundboard
+
+The **Soundboard** tab is for running audio at the table: background music, a
+rainstorm under it, and a door slamming on cue, all at once. It has four tracks,
+named Music, Ambience, Effects and Extra to start with. The names are only
+suggestions. Click a name to rename it, and put anything on any track.
+
+Give each track a folder with **Choose folder**. Its sounds and subfolders
+appear underneath in one of two views, switched with the ▦ and ☰ buttons:
+
+- **Grid** shows a button for each sound and folder. Click a folder to go into
+  it, and use **Back** or the path above the buttons to come out again.
+- **List** shows the folder as a tree, like a file manager. Click a folder to
+  expand it in place.
+
+Click a sound to play it on that track. A track plays one sound at a time, so
+clicking another one replaces it. To layer sounds, put them on different tracks.
+Each track has its own:
+
+- **🔁 Loop** to repeat the sound until you turn it off. Turning it off lets the
+  current play-through finish.
+- **⏸ Pause** and **⏹ Stop**.
+- **Volume**, so the music can sit under the ambience.
+
+**Master** below the tracks sets the volume of everything together, and
+**Stop all** silences every track at once. The folders, names, volumes, loop
+settings and views are remembered until the next run. What was playing is not.
+
+The soundboard shares the voice channel with the other tabs. Playing a sound
+stops the playlist or a desktop stream, and starting either of those stops the
+soundboard. If you added or removed files in a folder while the app was open,
+press ⟳ to see them.
+
 ## Streaming your desktop audio
 
 Open **Stream desktop audio** and the device list shows everything Windows has,

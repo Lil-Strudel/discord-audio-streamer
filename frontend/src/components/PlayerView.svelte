@@ -131,9 +131,9 @@
       ⏮
     </button>
 
-    {#if status.playing}
+    {#if isPlayer && status.playing}
       <button class="primary" onclick={() => run(Pause)}>Pause</button>
-    {:else if status.paused}
+    {:else if isPlayer && status.paused}
       <button class="primary" onclick={() => run(Resume)}>Resume</button>
     {:else}
       <button class="primary" disabled={!canPlay} onclick={() => run(Play)}>Play</button>

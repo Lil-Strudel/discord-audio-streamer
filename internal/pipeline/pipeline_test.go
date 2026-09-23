@@ -405,3 +405,77 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) bool {
 	}
 	return false
 }
+
+// fakeMixer renders a constant level while on is set.
+type fakeMixer struct {
+	on    atomic.Bool
+	level int16
+}
+
+func (m *fakeMixer) Mix(dst []int16) bool {
+	if !m.on.Load() {
+		return false
+	}
+	for i := range dst {
+		dst[i] = m.level
+	}
+	return true
+}
+
+func (m *fakeMixer) BufferStats() (int, int, uint64) { return 3, 8, 1 }
+
+func TestMixerFramesAreEncodedAndSilenceSendsNothing(t *testing.T) {
+	p := newPipeline(t)
+	m := &fakeMixer{level: 8000}
+	p.SetMixer(m)
+
+	if !p.Active() {
+		t.Error("a pipeline with a mixer reports no source")
+	}
+	for _, frame := range drain(t, p, 2) {
+		if len(frame) != 0 {
+			t.Fatal("a mixer with nothing playing produced a frame")
+		}
+	}
+
+	m.on.Store(true)
+	for _, frame := range drain(t, p, 2) {
+		if len(frame) == 0 {
+			t.Fatal("a playing mixer produced an empty frame")
+		}
+	}
+	if stats := p.Stats(); stats.BufferedFrames != 3 || stats.BufferCapacity != 8 || stats.Underruns != 1 {
+		t.Fatalf("stats = %+v, want the mixer's buffer figures", stats)
+	}
+}
+
+func TestFileSourceAndMixerReplaceEachOther(t *testing.T) {
+	p := newPipeline(t)
+	src := &fakeSource{data: tonePCM(50, 8000)}
+	p.SetFileSource(src, 0)
+
+	m := &fakeMixer{}
+	p.SetMixer(m)
+	if !src.closed {
+		t.Fatal("attaching a mixer left the file source running")
+	}
+
+	// The mixer is silent, so anything produced now would be the old file.
+	for _, frame := range drain(t, p, 3) {
+		if len(frame) != 0 {
+			t.Fatal("the replaced file source is still being played")
+		}
+	}
+
+	m.on.Store(true)
+	p.SetFileSource(&fakeSource{data: tonePCM(1, 0)}, 0)
+	p.Stop()
+	if p.Active() {
+		t.Fatal("Stop left the pipeline active")
+	}
+	for _, frame := range drain(t, p, 3) {
+		if len(frame) != 0 {
+			t.Fatal("a detached mixer is still being played")
+		}
+	}
+}

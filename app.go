@@ -15,6 +15,7 @@ import (
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/discord"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/ffmpeg"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/logging"
+	"github.com/Lil-Strudel/discord-audio-streamer/internal/mixer"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/pipeline"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/playlist"
 	"github.com/Lil-Strudel/discord-audio-streamer/internal/ytdlp"
@@ -37,6 +38,10 @@ const (
 	// status because a queue can hold hundreds of tracks, and re-sending all of
 	// them every time the volume knob moves would be wasteful.
 	eventQueue = "queue"
+
+	// eventSoundboard fires when a soundboard track's setup or what it is
+	// playing changes. It is separate for the same reason as the queue.
+	eventSoundboard = "soundboard"
 )
 
 // telemetryInterval is how often the meter and position are pushed. Fast enough
@@ -48,9 +53,10 @@ const telemetryInterval = 100 * time.Millisecond
 type Mode string
 
 const (
-	ModeIdle    Mode = "idle"
-	ModePlayer  Mode = "player"
-	ModeCapture Mode = "capture"
+	ModeIdle       Mode = "idle"
+	ModePlayer     Mode = "player"
+	ModeCapture    Mode = "capture"
+	ModeSoundboard Mode = "soundboard"
 )
 
 // Status is the whole view state, delivered in one call so the UI never has to
@@ -97,6 +103,9 @@ type Telemetry struct {
 	LatenessMs      float64 `json:"latenessMs"`
 	MaxLatenessMs   float64 `json:"maxLatenessMs"`
 	EncryptionReady bool    `json:"encryptionReady"`
+
+	// Soundboard holds each soundboard track's level and position.
+	Soundboard []mixer.ChannelStats `json:"soundboard"`
 }
 
 // App is the surface bound to the frontend. Every exported method here is
@@ -115,6 +124,10 @@ type App struct {
 	// links caches resolved YouTube addresses; it guards itself for the same
 	// reason the queue does.
 	links ytdlp.Cache
+
+	// mixer plays the soundboard. It lives as long as the app, rather than the
+	// voice connection, and guards itself.
+	mixer *mixer.Mixer
 
 	// playSeq numbers attempts to start playback, so one that finishes after a
 	// later one started can tell that it has been overtaken. Resolving a link
@@ -137,7 +150,7 @@ func NewApp(logger *slog.Logger) *App {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &App{
+	a := &App{
 		logger: logger,
 		client: discord.New(logger),
 		mode:   ModeIdle,
@@ -145,6 +158,11 @@ func NewApp(logger *slog.Logger) *App {
 		// empty one keeps the bound methods safe to call before that happens.
 		queue: playlist.New(playlist.State{}),
 	}
+	a.mixer = mixer.New(logger, func(path string) (ffmpeg.Source, error) {
+		return ffmpeg.OpenFile(a.ctx, path, 0)
+	})
+	a.mixer.SetOnEnd(func(int) { a.emitSoundboard() })
+	return a
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -158,6 +176,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.store = store
 	a.queue = playlist.New(store.Settings().Queue)
+	a.applySoundboardSettings()
 
 	// Resolve ffmpeg once at startup rather than at the first play, so a broken
 	// installation is reported while the user is still reading the setup screen
@@ -348,6 +367,7 @@ func (a *App) Disconnect() error {
 	if pipe != nil {
 		pipe.Close()
 	}
+	a.silenceSoundboard()
 
 	a.emitStatus()
 	return nil

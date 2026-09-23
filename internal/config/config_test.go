@@ -126,6 +126,12 @@ func TestSettingsPersist(t *testing.T) {
 			Shuffle:   true,
 			Repeat:    playlist.RepeatAll,
 		},
+		Soundboard: Soundboard{Tracks: []SoundboardTrack{
+			{Name: "Tavern", Folder: "/dnd/music", VolumePercent: 40, Loop: true, View: ViewList},
+			{Name: "Weather", Folder: "/dnd/ambience", VolumePercent: 0, View: ViewGrid},
+			{Name: "Effects", VolumePercent: 100, View: ViewGrid},
+			{Name: "Extra", VolumePercent: 100, View: ViewGrid},
+		}},
 	}
 	if err := s.SetSettings(want); err != nil {
 		t.Fatalf("SetSettings: %v", err)
@@ -314,5 +320,55 @@ func TestACurrentIDNamingNoQueuedTrackIsCleared(t *testing.T) {
 
 	if got := s.Settings().Queue.CurrentID; got != "" {
 		t.Fatalf("CurrentID = %q, want empty", got)
+	}
+}
+
+func TestSoundboardPadsMissingTracks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	// A file written before the soundboard existed, and one with a single
+	// hand-edited track, both come back with the full set.
+	raw := `{"version":1,"settings":{"soundboard":{"tracks":[
+		{"name":"","folder":"/music","volumePercent":0,"loop":true,"view":"tiles"}
+	]}}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := OpenAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracks := s.Settings().Soundboard.Tracks
+	if len(tracks) != SoundboardTracks {
+		t.Fatalf("got %d tracks, want %d", len(tracks), SoundboardTracks)
+	}
+
+	first := tracks[0]
+	if first.Name != "Music" || first.Folder != "/music" || !first.Loop {
+		t.Errorf("first track = %+v, want its folder and loop kept and its name defaulted", first)
+	}
+	if first.VolumePercent != 0 {
+		t.Errorf("a muted track came back at %v%%, want it to stay muted", first.VolumePercent)
+	}
+	if first.View != ViewGrid {
+		t.Errorf("an unknown view came back as %q, want %q", first.View, ViewGrid)
+	}
+	if tracks[3].Name != "Extra" || tracks[3].VolumePercent != 100 {
+		t.Errorf("padded track = %+v, want the defaults", tracks[3])
+	}
+}
+
+func TestSoundboardVolumeIsClamped(t *testing.T) {
+	s := newStore(t)
+	err := s.Update(func(st *Settings) {
+		st.Soundboard.Tracks[1].VolumePercent = 900
+		st.Soundboard.Tracks[2].VolumePercent = -5
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracks := s.Settings().Soundboard.Tracks
+	if tracks[1].VolumePercent != 150 || tracks[2].VolumePercent != 0 {
+		t.Fatalf("volumes = %v and %v, want 150 and 0", tracks[1].VolumePercent, tracks[2].VolumePercent)
 	}
 }

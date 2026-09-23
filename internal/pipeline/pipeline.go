@@ -71,6 +71,7 @@ type Pipeline struct {
 
 	mu      sync.RWMutex
 	current *stream
+	mixer   Mixer
 
 	pendingBitrate atomic.Int64
 	paused         atomic.Bool
@@ -105,6 +106,18 @@ func New(logger *slog.Logger, volumePercent float64, bitrate int) (*Pipeline, er
 		scratch: make([]int16, audio.SamplesPerFrame),
 		silence: make([]int16, audio.SamplesPerFrame),
 	}, nil
+}
+
+// Mixer is a source that renders frames on demand rather than through a ring
+// buffer, because it sums several buffered sources of its own. The soundboard
+// is one.
+type Mixer interface {
+	// Mix fills dst with the next frame and reports whether there was one.
+	// It is called from the pacer goroutine and must not block.
+	Mix(dst []int16) bool
+
+	// BufferStats sums the buffer health of whatever the mixer is playing.
+	BufferStats() (buffered, capacity int, underruns uint64)
 }
 
 // stream is one source and the goroutine feeding its ring buffer.
@@ -150,6 +163,7 @@ func (p *Pipeline) setSource(src ffmpeg.Source, frames int, live bool, offset ti
 	p.mu.Lock()
 	previous := p.current
 	p.current = s
+	p.mixer = nil
 	p.mu.Unlock()
 
 	closeStream(previous)
@@ -159,11 +173,27 @@ func (p *Pipeline) setSource(src ffmpeg.Source, frames int, live bool, offset ti
 	go p.produce(s)
 }
 
-// Stop discards the current source and goes idle.
+// SetMixer plays whatever m renders, replacing any file or capture source.
+// The mixer's own sources are its owner's to stop; the pipeline only stops
+// pulling from it.
+func (p *Pipeline) SetMixer(m Mixer) {
+	p.mu.Lock()
+	previous := p.current
+	p.current = nil
+	p.mixer = m
+	p.mu.Unlock()
+
+	closeStream(previous)
+	p.paused.Store(false)
+	p.meter.Reset()
+}
+
+// Stop discards the current source, or detaches the mixer, and goes idle.
 func (p *Pipeline) Stop() {
 	p.mu.Lock()
 	previous := p.current
 	p.current = nil
+	p.mixer = nil
 	p.mu.Unlock()
 
 	closeStream(previous)
@@ -208,8 +238,18 @@ func (p *Pipeline) ProvideOpusFrame() ([]byte, error) {
 	}
 
 	p.mu.RLock()
-	s := p.current
+	s, mixer := p.current, p.mixer
 	p.mu.RUnlock()
+
+	if mixer != nil {
+		p.applyPendingBitrate()
+		// A mixer with nothing playing goes quiet the same way a finished
+		// file does, so the speaking indicator goes out between sounds.
+		if !mixer.Mix(p.scratch) {
+			return nil, nil
+		}
+		return p.encode()
+	}
 
 	if s == nil {
 		return nil, nil
@@ -228,13 +268,18 @@ func (p *Pipeline) ProvideOpusFrame() ([]byte, error) {
 		copy(p.scratch, p.silence)
 	}
 
-	// Gain is applied here, at the last possible moment, rather than as frames
-	// enter the buffer. A volume change then takes effect on the very next
-	// frame instead of waiting for buffered audio to drain.
+	s.framesOut.Add(1)
+	return p.encode()
+}
+
+// encode applies the output volume to the frame in p.scratch and encodes it.
+//
+// Gain is applied here, at the last possible moment, rather than as frames
+// enter the buffer. A volume change then takes effect on the very next frame
+// instead of waiting for buffered audio to drain.
+func (p *Pipeline) encode() ([]byte, error) {
 	p.gain.Apply(p.scratch)
 	p.meter.Observe(p.scratch)
-	s.framesOut.Add(1)
-
 	return p.enc.Encode(p.scratch)
 }
 
@@ -290,11 +335,11 @@ func (p *Pipeline) Position() time.Duration {
 	return s.offset + time.Duration(s.framesOut.Load())*audio.FrameDurationMs*time.Millisecond
 }
 
-// Active reports whether a source is attached.
+// Active reports whether a source or a mixer is attached.
 func (p *Pipeline) Active() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.current != nil
+	return p.current != nil || p.mixer != nil
 }
 
 // Err returns the error that ended the current source, if it failed.
@@ -331,9 +376,12 @@ func (p *Pipeline) Stats() Stats {
 	stats := Stats{RMS: rms, Peak: peak}
 
 	p.mu.RLock()
-	s := p.current
+	s, mixer := p.current, p.mixer
 	p.mu.RUnlock()
 
+	if mixer != nil {
+		stats.BufferedFrames, stats.BufferCapacity, stats.Underruns = mixer.BufferStats()
+	}
 	if s != nil {
 		stats.BufferedFrames = s.ring.Len()
 		stats.BufferCapacity = s.ring.Cap()

@@ -102,6 +102,7 @@ func (a *App) playTrack(track playlist.Track, offset time.Duration, auto bool) e
 	}
 
 	pipe.SetFileSource(src, offset)
+	a.silenceSoundboard()
 
 	a.mu.Lock()
 	a.mode = ModePlayer
@@ -243,6 +244,7 @@ func (a *App) StartCapture(deviceID string) error {
 	}
 
 	pipe.SetCaptureSource(src, settings.CaptureBufferFrames)
+	a.silenceSoundboard()
 
 	a.mu.Lock()
 	a.mode, a.deviceID = ModeCapture, deviceID
@@ -263,9 +265,9 @@ func (a *App) StopCapture() error {
 	return nil
 }
 
-// stopSource detaches whatever is playing and goes idle. Both audio paths share
-// it, which is what keeps them mutually exclusive: starting one always stops
-// the other rather than leaving both feeding the same connection.
+// stopSource detaches whatever is playing and goes idle. Every audio path
+// shares it, which is what keeps them mutually exclusive: starting one always
+// stops the others rather than leaving several feeding the same connection.
 func (a *App) stopSource() {
 	a.mu.Lock()
 	pipe := a.pipe
@@ -275,6 +277,7 @@ func (a *App) stopSource() {
 	if pipe != nil {
 		pipe.Stop()
 	}
+	a.silenceSoundboard()
 }
 
 // ----------------------------------------------------------------- settings
@@ -396,6 +399,8 @@ func (a *App) telemetry() Telemetry {
 			a.emit(eventError, err.Error())
 		}
 	}
+
+	t.Soundboard = a.mixer.Stats()
 
 	if stats, ok := a.client.PacerStats(); ok {
 		t.FramesSent, t.FramesHeld, t.Resyncs = stats.FramesSent, stats.FramesHeld, stats.Resyncs

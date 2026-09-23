@@ -47,6 +47,60 @@ type Settings struct {
 	// order is kept: a shuffled order is regenerated on load, so a restart
 	// reshuffles rather than replaying the previous run's sequence.
 	Queue playlist.State `json:"queue"`
+
+	// Soundboard is the soundboard's layout: each track's folder, name and
+	// controls. What was playing is not kept; a DM reopening the app is not
+	// asking for last session's thunderstorm to start again.
+	Soundboard Soundboard `json:"soundboard"`
+}
+
+// SoundboardTracks is how many tracks the soundboard has. It matches
+// mixer.Channels, which this package does not import only to keep the audio
+// code out of a package that just reads and writes a file.
+const SoundboardTracks = 4
+
+// maxTrackVolume matches audio.MaxVolumePercent, for the same reason.
+const maxTrackVolume = 150
+
+// Soundboard views.
+const (
+	ViewGrid = "grid"
+	ViewList = "list"
+)
+
+// Soundboard holds the soundboard's tracks, always exactly [SoundboardTracks].
+type Soundboard struct {
+	Tracks []SoundboardTrack `json:"tracks"`
+}
+
+// SoundboardTrack is one track's saved setup.
+type SoundboardTrack struct {
+	Name   string `json:"name"`
+	Folder string `json:"folder"`
+
+	// VolumePercent may be zero: unlike the output volume, a track is often
+	// muted on purpose and must come back muted.
+	VolumePercent float64 `json:"volumePercent"`
+	Loop          bool    `json:"loop"`
+
+	// View is how the folder is shown, [ViewGrid] or [ViewList].
+	View string `json:"view"`
+}
+
+// defaultTrackNames suggest what each track is for without limiting it.
+var defaultTrackNames = [SoundboardTracks]string{"Music", "Ambience", "Effects", "Extra"}
+
+// DefaultSoundboard returns the soundboard a first-time user starts with.
+func DefaultSoundboard() Soundboard {
+	tracks := make([]SoundboardTrack, SoundboardTracks)
+	for i := range tracks {
+		tracks[i] = SoundboardTrack{
+			Name:          defaultTrackNames[i],
+			VolumePercent: 100,
+			View:          ViewGrid,
+		}
+	}
+	return Soundboard{Tracks: tracks}
 }
 
 // DefaultSettings returns the settings a first-time user starts with.
@@ -55,6 +109,7 @@ func DefaultSettings() Settings {
 		VolumePercent:       100,
 		Bitrate:             96_000,
 		CaptureBufferFrames: 5,
+		Soundboard:          DefaultSoundboard(),
 	}
 }
 
@@ -253,7 +308,32 @@ func withDefaults(s Settings) Settings {
 		s.CaptureBufferFrames = defaults.CaptureBufferFrames
 	}
 	s.Queue = withQueueDefaults(s.Queue)
+	s.Soundboard = withSoundboardDefaults(s.Soundboard)
 	return s
+}
+
+// withSoundboardDefaults makes sure there are exactly [SoundboardTracks] tracks,
+// each with a name, a usable view and a volume in range. A file from before the
+// soundboard existed has none, and so gets the defaults.
+func withSoundboardDefaults(sb Soundboard) Soundboard {
+	defaults := DefaultSoundboard()
+	tracks := make([]SoundboardTrack, SoundboardTracks)
+	for i := range tracks {
+		if i >= len(sb.Tracks) {
+			tracks[i] = defaults.Tracks[i]
+			continue
+		}
+		t := sb.Tracks[i]
+		if t.Name == "" {
+			t.Name = defaults.Tracks[i].Name
+		}
+		if t.View != ViewGrid && t.View != ViewList {
+			t.View = ViewGrid
+		}
+		t.VolumePercent = max(0, min(maxTrackVolume, t.VolumePercent))
+		tracks[i] = t
+	}
+	return Soundboard{Tracks: tracks}
 }
 
 // withQueueDefaults drops queue entries a hand-edited or older file could carry

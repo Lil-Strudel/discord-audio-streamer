@@ -1,7 +1,20 @@
 <script lang="ts">
   import { SetVolume } from "../../wailsjs/go/main/App";
 
-  let { value = 100, disabled = false } = $props();
+  let {
+    value = 100,
+    disabled = false,
+    id = "volume",
+    label = "Volume",
+    // The output volume unless told otherwise; a soundboard track passes its own.
+    onchange = SetVolume,
+  }: {
+    value?: number;
+    disabled?: boolean;
+    id?: string;
+    label?: string;
+    onchange?: (percent: number) => Promise<unknown>;
+  } = $props();
 
   // `requested` is the last position we asked the backend for. The slider shows
   // it in preference to the prop until the backend reports that same value back,
@@ -17,7 +30,7 @@
   async function push(v: number) {
     requested = v;
     try {
-      await SetVolume(v);
+      await onchange(v);
     } catch {
       // Volume is applied to the live stream and persisted separately; a failed
       // write is not worth interrupting playback over.
@@ -26,9 +39,9 @@
 </script>
 
 <div class="volume">
-  <label for="volume">Volume</label>
+  <label for={id}>{label}</label>
   <input
-    id="volume"
+    {id}
     type="range"
     min="0"
     max="150"
