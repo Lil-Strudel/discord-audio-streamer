@@ -6,6 +6,7 @@
   import type { Telemetry } from "../lib/types";
   import { errorText } from "../lib/types";
   import LevelMeter from "./LevelMeter.svelte";
+  import StreamHealth from "./StreamHealth.svelte";
   import VolumeSlider from "./VolumeSlider.svelte";
 
   let {
@@ -167,19 +168,7 @@
       </p>
     </div>
 
-    <dl class="stats">
-      <div><dt>Buffered</dt><dd>{telemetry.bufferedFrames} / {telemetry.bufferCapacity}</dd></div>
-      <div><dt>Dropped</dt><dd class:bad={telemetry.droppedFrames > 0}>{telemetry.droppedFrames}</dd></div>
-      <div><dt>Underruns</dt><dd class:bad={telemetry.underruns > 0}>{telemetry.underruns}</dd></div>
-      <div><dt>Frames sent</dt><dd>{telemetry.framesSent}</dd></div>
-      <div><dt>Clock resyncs</dt><dd class:bad={telemetry.resyncs > 0}>{telemetry.resyncs}</dd></div>
-      <div><dt>Worst lateness</dt><dd>{telemetry.maxLatenessMs.toFixed(1)} ms</dd></div>
-    </dl>
-    <p class="note">
-      Dropped frames mean audio arrived faster than it could be sent; underruns mean
-      it arrived too slowly and silence was sent instead. A few of either around a
-      start or stop is normal.
-    </p>
+    <StreamHealth {telemetry} live />
   </details>
 
   {#if !status.inVoice}
@@ -256,36 +245,6 @@
   .buffer label span {
     font-variant-numeric: tabular-nums;
     color: var(--text-faint);
-  }
-
-  .stats {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 10px 16px;
-    margin: 14px 0 0;
-  }
-
-  .stats div {
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  dt {
-    color: var(--text-faint);
-    font-size: 12.5px;
-  }
-
-  dd {
-    margin: 0;
-    font-variant-numeric: tabular-nums;
-    font-size: 12.5px;
-  }
-
-  dd.bad {
-    color: var(--warn);
   }
 
   .note {

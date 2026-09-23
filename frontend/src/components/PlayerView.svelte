@@ -9,6 +9,7 @@
   import { errorText, formatTime } from "../lib/types";
   import LevelMeter from "./LevelMeter.svelte";
   import QueueList from "./QueueList.svelte";
+  import StreamHealth from "./StreamHealth.svelte";
   import VolumeSlider from "./VolumeSlider.svelte";
 
   let {
@@ -176,6 +177,11 @@
     <LevelMeter rms={telemetry.rms} peak={telemetry.peak} active={isPlayer && status.playing} />
   </div>
 
+  <details>
+    <summary>Stream health</summary>
+    <StreamHealth {telemetry} live={false} />
+  </details>
+
   {#if !status.inVoice}
     <p class="hint">Join a voice channel above to start playing.</p>
   {/if}
@@ -263,6 +269,17 @@
     flex-direction: column;
     gap: 12px;
     padding-top: 4px;
+  }
+
+  details {
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+  }
+
+  summary {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 13px;
   }
 
   .hint {
